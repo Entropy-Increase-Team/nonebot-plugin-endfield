@@ -177,7 +177,10 @@ def render_announce_data_image(payload: Dict[str, Any]) -> bytes:
     line_height = 30
     block_gap = 14
     title_height = 56
-    footer_height = 34
+    meta_bbox = meta_font.getbbox(publish_text)
+    meta_text_height = max(18, meta_bbox[3] - meta_bbox[1])
+    footer_height = meta_text_height + 10
+    note_height = 30
 
     temp = Image.new("RGB", (width, 10), "white")
     temp_draw = ImageDraw.Draw(temp)
@@ -210,40 +213,67 @@ def render_announce_data_image(payload: Dict[str, Any]) -> bytes:
             prepared_blocks.append({"type": "image", "image": resized, "height": resized_height})
             total_height += resized_height + block_gap
 
+    if prepared_blocks:
+        total_height -= block_gap
+
     max_height = 12000
-    height = min(max_height, total_height + padding + footer_height)
+    estimated_height = total_height + padding + footer_height
+    overflow = estimated_height > max_height
+    height = min(max_height, max(estimated_height, padding * 2 + title_height + footer_height))
+
+    # 使用“最大可用高度”做正文布局，并固定预留截断提示区域，避免后续挤压底部信息
+    content_bottom = max_height - padding - meta_text_height - 8 - note_height - 6
 
     image = Image.new("RGB", (width, height), "white")
     draw = ImageDraw.Draw(image)
     draw.text((padding, padding), title, fill="#111111", font=title_font)
 
     y = padding + title_height
-    for block in prepared_blocks:
-        if y >= height - padding:
+    did_truncate = False
+    for index, block in enumerate(prepared_blocks):
+        if y >= content_bottom:
+            did_truncate = True
             break
 
         if block["type"] == "text":
             for line in block["lines"]:
-                if y >= height - padding:
+                if y + line_height > content_bottom:
+                    did_truncate = True
                     break
                 draw.text((padding, y), line, fill="#222222", font=text_font)
                 y += line_height
-            y += block_gap
+            if did_truncate:
+                break
+            if index < len(prepared_blocks) - 1:
+                y += block_gap
             continue
 
         if block["type"] == "image":
             block_image: Image.Image = block["image"]
-            if y + block_image.height > height - padding:
+            if y + block_image.height > content_bottom:
+                did_truncate = True
                 break
             image.paste(block_image, (padding, y))
-            y += block_image.height + block_gap
+            y += block_image.height
+            if index < len(prepared_blocks) - 1:
+                y += block_gap
 
-    if total_height + padding > max_height:
+    note_y = y
+    if overflow or did_truncate:
         note = "内容过长，已截断显示。"
-        draw.text((padding, height - padding - line_height), note, fill="#aa0000", font=text_font)
+        note_y = max(padding + title_height, y)
+        draw.text((padding, note_y), note, fill="#aa0000", font=text_font)
+        content_end = note_y + note_height
+    else:
+        content_end = y
 
-    footer_y = height - padding - 24
+    footer_y = content_end + 8
+    final_height = min(max_height, footer_y + meta_text_height + padding)
+
     draw.text((padding, footer_y), publish_text, fill="#666666", font=meta_font)
+
+    if final_height < height:
+        image = image.crop((0, 0, width, final_height))
 
     buf = io.BytesIO()
     image.save(buf, format="PNG")
