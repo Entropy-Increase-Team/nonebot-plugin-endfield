@@ -32,11 +32,11 @@ _FONT_INIT_DONE = False
 _FALLBACK_FONT_FILES = {
 	"regular": (
 		"NotoSansCJKsc-Regular.otf",
-		"https://github.com/notofonts/noto-cjk/raw/main/Sans/OTF/SimplifiedChinese/NotoSansCJKsc-Regular.otf",
+		"https://gh-proxy.org/https://github.com/notofonts/noto-cjk/raw/main/Sans/OTF/SimplifiedChinese/NotoSansCJKsc-Regular.otf",
 	),
 	"bold": (
 		"NotoSansCJKsc-Bold.otf",
-		"https://github.com/notofonts/noto-cjk/raw/main/Sans/OTF/SimplifiedChinese/NotoSansCJKsc-Bold.otf",
+		"https://gh-proxy.org/https://github.com/notofonts/noto-cjk/raw/main/Sans/OTF/SimplifiedChinese/NotoSansCJKsc-Bold.otf",
 	),
 }
 
