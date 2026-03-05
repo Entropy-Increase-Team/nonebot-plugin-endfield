@@ -197,28 +197,10 @@ def _to_datetime_text(ts: Any) -> str:
 		return "未知"
 
 
-def _pool_category(pool_id: str) -> str:
-	p = (pool_id or "").lower()
-	if p.startswith("special_"):
-		return "special"
-	if p.startswith("standard_"):
-		return "standard"
-	if p.startswith("beginner_"):
-		return "beginner"
-	if p.startswith("weaponbox_") or p.startswith("weapon_") or p.startswith("weapon"):
-		return "weapon"
-	return "other"
-
-
-def _rarity_color(rarity: int) -> str:
-	if rarity >= 6:
-		return "#ef4444"
-	if rarity == 5:
-		return "#f59e0b"
-	return "#9ca3af"
-
-
-def _fetch_all_gacha_records(api_key: str, framework_token: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+def _fetch_all_gacha_records(
+	api_key: str,
+	framework_token: str,
+) -> tuple[dict[str, list[dict[str, Any]]], dict[str, Any]]:
 	headers = {
 		"accept": "application/json",
 		"X-API-Key": api_key,
@@ -226,6 +208,7 @@ def _fetch_all_gacha_records(api_key: str, framework_token: str) -> tuple[list[d
 	}
 
 	pool_values = ["limited", "standard", "beginner", "weapon"]
+	records_by_pool: dict[str, list[dict[str, Any]]] = {pool: [] for pool in pool_values}
 	all_records: list[dict[str, Any]] = []
 	meta_ref: dict[str, Any] = {}
 
@@ -241,7 +224,9 @@ def _fetch_all_gacha_records(api_key: str, framework_token: str) -> tuple[list[d
 
 		records = data.get("records") if isinstance(data.get("records"), list) else []
 		pages = _safe_int(data.get("pages"), 1)
-		all_records.extend([r for r in records if isinstance(r, dict)])
+		valid_records = [r for r in records if isinstance(r, dict)]
+		records_by_pool[pool].extend(valid_records)
+		all_records.extend(valid_records)
 
 		for page in range(2, max(2, pages + 1)):
 			resp = api_request("GET", f"/api/endfield/gacha/records?pools={pool}&page={page}", headers=headers)
@@ -250,9 +235,13 @@ def _fetch_all_gacha_records(api_key: str, framework_token: str) -> tuple[list[d
 				raise RuntimeError(f"获取 {pool} 卡池第 {page} 页失败：{msg or '请求失败'}")
 			page_data = resp.get("data") if isinstance(resp.get("data"), dict) else {}
 			page_records = page_data.get("records") if isinstance(page_data.get("records"), list) else []
-			all_records.extend([r for r in page_records if isinstance(r, dict)])
+			valid_page_records = [r for r in page_records if isinstance(r, dict)]
+			records_by_pool[pool].extend(valid_page_records)
+			all_records.extend(valid_page_records)
 
 	all_records.sort(key=lambda item: _safe_int(item.get("gacha_ts"), 0), reverse=True)
+	for pool in pool_values:
+		records_by_pool[pool].sort(key=lambda item: _safe_int(item.get("gacha_ts"), 0), reverse=True)
 
 	stats = {
 		"total_count": len(all_records),
@@ -263,23 +252,33 @@ def _fetch_all_gacha_records(api_key: str, framework_token: str) -> tuple[list[d
 	meta_data = dict(meta_ref) if isinstance(meta_ref, dict) else {}
 	meta_data["stats"] = stats
 	meta_data["total"] = len(all_records)
-	return all_records, meta_data
+	meta_data["all_records"] = all_records
+	return records_by_pool, meta_data
 
 
 def _render_column(
 	title: str,
-	pool_blocks: list[tuple[str, str, list[dict[str, Any]]]],
+	records: list[dict[str, Any]],
 	width: int,
 	bg: str,
 	title_font: ImageFont.ImageFont,
 	text_font: ImageFont.ImageFont,
+	yellow_threshold: int,
+	pink_threshold: int,
 ) -> Image.Image:
-	segment_w = 8
-	segment_h = 18
-	segment_gap = 2
-	max_per_row = max(20, (width - 28) // (segment_w + segment_gap))
+	bar_h = 12
+	bar_gap = 6
+	bar_left = 12
+	bar_right = width - 12
 
-	tmp_h = 240 + sum(max(1, len(items)) * 24 + 58 for _, _, items in pool_blocks)
+	def _bar_color(cumulative: int) -> str:
+		if cumulative >= pink_threshold:
+			return "#ec4899"
+		if cumulative >= yellow_threshold:
+			return "#eab308"
+		return "#22c55e"
+
+	tmp_h = 220 + max(1, len(records)) * (bar_h + bar_gap + 2)
 	img = Image.new("RGB", (width, tmp_h), bg)
 	draw = ImageDraw.Draw(img)
 
@@ -287,101 +286,56 @@ def _render_column(
 	draw.text((12, 12), title, fill="#111827", font=title_font)
 
 	y = 66
-	for pool_id, pool_name, records in pool_blocks:
-		draw.text((12, y), pool_name or "未知卡池", fill="#4b5563", font=text_font)
-		y += 24
+	normal_records: list[dict[str, Any]] = []
+	free_records: list[dict[str, Any]] = []
+	for rec in records:
+		is_free_value = rec.get("is_free")
+		is_free = is_free_value is True or str(is_free_value).strip().lower() in {"true", "1"}
+		if is_free:
+			free_records.append(rec)
+		else:
+			normal_records.append(rec)
 
-		normal_records: list[dict[str, Any]] = []
-		free_records: list[dict[str, Any]] = []
-		for rec in records:
-			is_free_value = rec.get("is_free")
-			is_free = is_free_value is True or str(is_free_value).strip().lower() in {"true", "1"}
-			if is_free:
-				free_records.append(rec)
-			else:
-				normal_records.append(rec)
+	x = 12
+	row_top = y
+	cumulative = 0
+	for idx, rec in enumerate(normal_records):
+		_ = idx
+		_ = rec
+		cumulative += 1
+		draw.rectangle((bar_left, row_top, bar_right, row_top + bar_h), fill=_bar_color(cumulative))
+		row_top += bar_h + bar_gap
 
-		x = 12
-		row_top = y
-		for idx, rec in enumerate(normal_records):
-			rarity = _safe_int(rec.get("rarity"), 4)
-			draw.rectangle((x, row_top, x + segment_w, row_top + segment_h), fill=_rarity_color(rarity))
+	if free_records:
+		if normal_records:
+			row_top += 4
+		draw.text((12, row_top), "免费十连", fill="#2563eb", font=text_font)
+		row_top += 22
+		for idx, rec in enumerate(free_records):
+			_ = idx
+			_ = rec
+			cumulative += 1
+			draw.rectangle((bar_left, row_top, bar_right, row_top + bar_h), fill=_bar_color(cumulative))
+			row_top += bar_h + bar_gap
 
-			is_last = idx == len(normal_records) - 1
-			if rarity >= 6 and not is_last:
-				x = 12
-				row_top += segment_h + 8
-				continue
-
-			x += segment_w + segment_gap
-			if x + segment_w >= width - 10 and not is_last:
-				x = 12
-				row_top += segment_h + 8
-
-		if free_records:
-			if normal_records:
-				row_top += segment_h + 8
-			draw.text((12, row_top), "免费十连", fill="#2563eb", font=text_font)
-			row_top += 22
-			x = 12
-			for idx, rec in enumerate(free_records):
-				rarity = _safe_int(rec.get("rarity"), 4)
-				draw.rectangle((x, row_top, x + segment_w, row_top + segment_h), fill=_rarity_color(rarity))
-
-				is_last = idx == len(free_records) - 1
-				if rarity >= 6 and not is_last:
-					x = 12
-					row_top += segment_h + 8
-					continue
-
-				x += segment_w + segment_gap
-				if x + segment_w >= width - 10 and not is_last:
-					x = 12
-					row_top += segment_h + 8
-
-		y = row_top + segment_h + 16
-		draw.line((12, y, width - 12, y), fill="#d1d5db", width=1)
-		y += 10
-
+	y = row_top + 10
 	return img.crop((0, 0, width, max(120, y + 4)))
 
 
 def _render_gacha_analysis_image(
-	records: list[dict[str, Any]],
+	records_by_pool: dict[str, list[dict[str, Any]]],
 	meta_data: dict[str, Any],
 	role_id: Optional[str],
 ) -> bytes:
-	by_category: dict[str, dict[str, dict[str, Any]]] = {
-		"special": {},
-		"standard": {},
-		"beginner": {},
-		"weapon": {},
-	}
-
-	for rec in records:
-		pool_id = str(rec.get("pool_id") or "")
-		pool_name = str(rec.get("pool_name") or "")
-		category = _pool_category(pool_id)
-		if category not in by_category:
-			continue
-		block = by_category[category].setdefault(pool_id or "unknown_pool", {"pool_name": pool_name, "records": []})
-		block["records"].append(rec)
-
-	def build_blocks(cat: str) -> list[tuple[str, str, list[dict[str, Any]]]]:
-		items: list[tuple[str, str, list[dict[str, Any]]]] = []
-		for pool_id, payload in by_category[cat].items():
-			items.append((pool_id, str(payload.get("pool_name") or ""), payload.get("records") or []))
-		return items
-
 	title_font = _pick_bold_font(24)
 	text_font = _pick_font(18)
 	small_font = _pick_font(16)
 
 	columns = [
-		_render_column("限定寻访", build_blocks("special"), 420, "#ffffff", title_font, small_font),
-		_render_column("常驻寻访", build_blocks("standard"), 420, "#ffffff", title_font, small_font),
-		_render_column("新手寻访", build_blocks("beginner"), 420, "#ffffff", title_font, small_font),
-		_render_column("武器寻访", build_blocks("weapon"), 420, "#ffffff", title_font, small_font),
+		_render_column("限定寻访", records_by_pool.get("limited", []), 420, "#ffffff", title_font, small_font, 40, 65),
+		_render_column("常驻寻访", records_by_pool.get("standard", []), 420, "#ffffff", title_font, small_font, 40, 65),
+		_render_column("新手寻访", records_by_pool.get("beginner", []), 420, "#ffffff", title_font, small_font, 40, 65),
+		_render_column("武器寻访", records_by_pool.get("weapon", []), 420, "#ffffff", title_font, small_font, 20, 35),
 	]
 
 	content_h = max(col.height for col in columns)
@@ -393,12 +347,13 @@ def _render_gacha_analysis_image(
 	draw = ImageDraw.Draw(img)
 
 	stats = meta_data.get("stats") if isinstance(meta_data.get("stats"), dict) else {}
-	total = _safe_int(meta_data.get("total"), len(records))
+	all_records = meta_data.get("all_records") if isinstance(meta_data.get("all_records"), list) else []
+	total = _safe_int(meta_data.get("total"), len(all_records))
 	star6 = _safe_int(stats.get("star6_count"), 0)
 	star5 = _safe_int(stats.get("star5_count"), 0)
 	star4 = _safe_int(stats.get("star4_count"), 0)
-	start_text = _to_datetime_text(records[0].get("gacha_ts")) if records else "未知"
-	end_text = _to_datetime_text(records[-1].get("gacha_ts")) if records else "未知"
+	start_text = _to_datetime_text(all_records[-1].get("gacha_ts")) if all_records else "未知"
+	end_text = _to_datetime_text(all_records[0].get("gacha_ts")) if all_records else "未知"
 
 	draw.rectangle((0, 0, width, 96), fill="#eef2ff")
 	draw.text((12, 14), "终末地抽卡分析", fill="#111827", font=_pick_bold_font(34))
@@ -439,18 +394,19 @@ async def handle_gacha_analysis(event: Event):
 	framework_token = active_binding["framework_token"]
 
 	try:
-		records, meta_data = await asyncio.to_thread(_fetch_all_gacha_records, api_key, framework_token)
+		records_by_pool, meta_data = await asyncio.to_thread(_fetch_all_gacha_records, api_key, framework_token)
 	except Exception as e:
 		logger.warning(f"fetch gacha records failed: {e}")
 		await gacha_analysis.finish(str(e))
 
-	if not records:
+	all_records = meta_data.get("all_records") if isinstance(meta_data.get("all_records"), list) else []
+	if not all_records:
 		await gacha_analysis.finish("未获取到抽卡记录。")
 
 	try:
 		image_bytes = await asyncio.to_thread(
 			_render_gacha_analysis_image,
-			records,
+			records_by_pool,
 			meta_data,
 			active_binding.get("role_id"),
 		)
