@@ -269,6 +269,7 @@ def _render_column(
 	segment_w = 8
 	segment_h = 18
 	segment_gap = 2
+	left = 12
 
 	def _bar_color(cumulative: int) -> str:
 		if cumulative >= pink_threshold:
@@ -277,66 +278,74 @@ def _render_column(
 			return "#eab308"
 		return "#22c55e"
 
-	tmp_h = 240 + max(1, len(records)) * 26
+	pool_names = [str((rec.get("pool_name") or "未知卡池")) for rec in records if isinstance(rec, dict)]
+	pool_group_count = max(1, len(dict.fromkeys(pool_names)))
+	tmp_h = 260 + max(1, len(records)) * 26 + pool_group_count * 44
 	img = Image.new("RGB", (width, tmp_h), bg)
 	draw = ImageDraw.Draw(img)
 
 	draw.rectangle((0, 0, width, 54), fill="#f3f4f6")
 	draw.text((12, 12), title, fill="#111827", font=title_font)
 
-	y = 66
-	normal_records: list[dict[str, Any]] = []
-	free_records: list[dict[str, Any]] = []
-	for rec in records:
-		is_free_value = rec.get("is_free")
-		is_free = is_free_value is True or str(is_free_value).strip().lower() in {"true", "1"}
-		if is_free:
-			free_records.append(rec)
-		else:
-			normal_records.append(rec)
+	def _draw_strip_rows(items: list[dict[str, Any]], start_y: int, cumulative_count: int) -> tuple[int, int]:
+		if not items:
+			return start_y, cumulative_count
 
-	x = 12
-	row_top = y
-	cumulative = 0
-	for idx, rec in enumerate(normal_records):
-		rarity = _safe_int(rec.get("rarity"), 4)
-		cumulative += 1
-		draw.rectangle((x, row_top, x + segment_w, row_top + segment_h), fill=_bar_color(cumulative))
-
-		is_last = idx == len(normal_records) - 1
-		if rarity >= 6 and not is_last:
-			x = 12
-			row_top += segment_h + 8
-			continue
-
-		x += segment_w + segment_gap
-		if x + segment_w >= width - 10 and not is_last:
-			x = 12
-			row_top += segment_h + 8
-
-	if free_records:
-		if normal_records:
-			row_top += segment_h + 8
-		draw.text((12, row_top), "免费十连", fill="#2563eb", font=text_font)
-		row_top += 22
-		x = 12
-		for idx, rec in enumerate(free_records):
+		x = left
+		row_top = start_y
+		for idx, rec in enumerate(items):
 			rarity = _safe_int(rec.get("rarity"), 4)
-			cumulative += 1
-			draw.rectangle((x, row_top, x + segment_w, row_top + segment_h), fill=_bar_color(cumulative))
+			cumulative_count += 1
+			draw.rectangle((x, row_top, x + segment_w, row_top + segment_h), fill=_bar_color(cumulative_count))
 
-			is_last = idx == len(free_records) - 1
+			is_last = idx == len(items) - 1
 			if rarity >= 6 and not is_last:
-				x = 12
+				x = left
 				row_top += segment_h + 8
 				continue
 
 			x += segment_w + segment_gap
 			if x + segment_w >= width - 10 and not is_last:
-				x = 12
+				x = left
 				row_top += segment_h + 8
 
-	y = row_top + segment_h + 16
+		return row_top + segment_h, cumulative_count
+
+	groups: dict[str, list[dict[str, Any]]] = {}
+	for rec in records:
+		if not isinstance(rec, dict):
+			continue
+		pool_name = str(rec.get("pool_name") or "未知卡池")
+		groups.setdefault(pool_name, []).append(rec)
+
+	y = 66
+	cumulative = 0
+	for pool_name, group_records in groups.items():
+		draw.text((12, y), pool_name, fill="#4b5563", font=text_font)
+		y += 24
+
+		normal_records: list[dict[str, Any]] = []
+		free_records: list[dict[str, Any]] = []
+		for rec in group_records:
+			is_free_value = rec.get("is_free")
+			is_free = is_free_value is True or str(is_free_value).strip().lower() in {"true", "1"}
+			if is_free:
+				free_records.append(rec)
+			else:
+				normal_records.append(rec)
+
+		y, cumulative = _draw_strip_rows(normal_records, y, cumulative)
+
+		if free_records:
+			if normal_records:
+				y += 8
+			draw.text((12, y), "免费十连", fill="#2563eb", font=text_font)
+			y += 22
+			y, cumulative = _draw_strip_rows(free_records, y, cumulative)
+
+		draw.line((12, y + 10, width - 12, y + 10), fill="#d1d5db", width=1)
+		y += 20
+
 	return img.crop((0, 0, width, max(120, y + 4)))
 
 
