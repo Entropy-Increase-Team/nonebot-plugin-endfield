@@ -265,6 +265,7 @@ def _render_column(
 	text_font: ImageFont.ImageFont,
 	yellow_threshold: int,
 	pink_threshold: int,
+	carry_over_between_pools: bool = False,
 ) -> Image.Image:
 	segment_w = 8
 	segment_h = 18
@@ -320,28 +321,52 @@ def _render_column(
 	draw.rectangle((0, 0, width, 54), fill="#f3f4f6")
 	draw.text((12, 12), title, fill="#111827", font=title_font)
 
-	def _draw_strip_rows(items: list[dict[str, Any]], start_y: int) -> int:
+	def _draw_strip_rows(items: list[dict[str, Any]], start_y: int, start_count: int) -> tuple[int, int]:
 		if not items:
-			return start_y
+			return start_y, start_count
 
 		x = left
 		row_top = start_y
-		row_cumulative = 0
+		row_count = start_count
+		row_items: list[dict[str, Any]] = []
+
+		def flush_row() -> None:
+			nonlocal x, row_top, row_count, row_items
+			if not row_items:
+				return
+			row_end_count = row_count
+			row_color = _bar_color(row_end_count)
+			draw_x = left
+			for _ in row_items:
+				draw.rectangle((draw_x, row_top, draw_x + segment_w, row_top + segment_h), fill=row_color)
+				draw_x += segment_w + segment_gap
+			x = left
+			row_top += segment_h + 8
+			row_items = []
+
 		for idx, rec in enumerate(items):
 			rarity = _safe_int(rec.get("rarity"), 4)
-			row_cumulative += 1
-			draw.rectangle((x, row_top, x + segment_w, row_top + segment_h), fill=_bar_color(row_cumulative))
+			row_count += 1
+			row_items.append(rec)
 
 			is_last = idx == len(items) - 1
 			if rarity >= 6 and not is_last:
-				x = left
-				row_top += segment_h + 8
-				row_cumulative = 0
+				flush_row()
+				row_count = 0
 				continue
 
 			x += segment_w + segment_gap
 
-		return row_top + segment_h
+		if row_items:
+			row_end_count = row_count
+			row_color = _bar_color(row_end_count)
+			draw_x = left
+			for _ in row_items:
+				draw.rectangle((draw_x, row_top, draw_x + segment_w, row_top + segment_h), fill=row_color)
+				draw_x += segment_w + segment_gap
+			row_top += segment_h
+
+		return row_top, row_count
 
 	groups: dict[str, list[dict[str, Any]]] = {}
 	for rec in records:
@@ -351,6 +376,7 @@ def _render_column(
 		groups.setdefault(pool_name, []).append(rec)
 
 	y = 66
+	inherited_count = 0
 	for pool_name, group_records in groups.items():
 		draw.text((12, y), pool_name, fill="#4b5563", font=text_font)
 		y += 24
@@ -365,14 +391,19 @@ def _render_column(
 			else:
 				normal_records.append(rec)
 
-		y = _draw_strip_rows(normal_records, y)
+		start_count = inherited_count if carry_over_between_pools else 0
+		y, tail_count = _draw_strip_rows(normal_records, y, start_count)
 
 		if free_records:
 			if normal_records:
 				y += 8
 			draw.text((12, y), "免费十连", fill="#2563eb", font=text_font)
 			y += 22
-			y = _draw_strip_rows(free_records, y)
+			y, tail_count = _draw_strip_rows(free_records, y, tail_count)
+
+		if carry_over_between_pools:
+			last_rarity = _safe_int(group_records[-1].get("rarity"), 4) if group_records else 6
+			inherited_count = 0 if last_rarity >= 6 else tail_count
 
 		draw.line((12, y + 10, width - 12, y + 10), fill="#d1d5db", width=1)
 		y += 20
@@ -390,7 +421,7 @@ def _render_gacha_analysis_image(
 	small_font = _pick_font(16)
 
 	columns = [
-		_render_column("限定寻访", records_by_pool.get("limited", []), 420, "#ffffff", title_font, small_font, 40, 65),
+		_render_column("限定寻访", records_by_pool.get("limited", []), 420, "#ffffff", title_font, small_font, 40, 65, True),
 		_render_column("常驻寻访", records_by_pool.get("standard", []), 420, "#ffffff", title_font, small_font, 40, 65),
 		_render_column("新手寻访", records_by_pool.get("beginner", []), 420, "#ffffff", title_font, small_font, 40, 65),
 		_render_column("武器寻访", records_by_pool.get("weapon", []), 420, "#ffffff", title_font, small_font, 20, 35),
