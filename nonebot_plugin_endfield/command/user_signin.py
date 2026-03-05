@@ -3,6 +3,7 @@ import sqlite3
 from typing import Any, Optional
 
 from nonebot import get_driver, on_command
+from nonebot.adapters import Event
 
 from ..config import Config
 from ..lib.api import api_request
@@ -65,7 +66,7 @@ def _get_active_binding(user_id: str) -> Optional[dict[str, Any]]:
 
 
 @user_signin.handle()
-async def handle_user_signin(event: Any) -> None:
+async def handle_user_signin(event: Event) -> None:
 	user_id = str(event.get_user_id())
 	binding = _get_active_binding(user_id)
 	if not binding:
