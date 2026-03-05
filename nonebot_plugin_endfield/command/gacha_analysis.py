@@ -225,27 +225,45 @@ def _fetch_all_gacha_records(api_key: str, framework_token: str) -> tuple[list[d
 		"X-Framework-Token": framework_token,
 	}
 
-	first = api_request("GET", "/api/endfield/gacha/records", headers=headers)
-	if not isinstance(first, dict) or first.get("code") != 0:
-		msg = first.get("message") if isinstance(first, dict) else "请求失败"
-		raise RuntimeError(f"获取抽卡记录失败：{msg or '请求失败'}")
+	pool_values = ["limited", "standard", "beginner", "weapon"]
+	all_records: list[dict[str, Any]] = []
+	meta_ref: dict[str, Any] = {}
 
-	data = first.get("data") if isinstance(first.get("data"), dict) else {}
-	records = data.get("records") if isinstance(data.get("records"), list) else []
-	pages = _safe_int(data.get("pages"), 1)
+	for pool in pool_values:
+		first = api_request("GET", f"/api/endfield/gacha/records?pools={pool}", headers=headers)
+		if not isinstance(first, dict) or first.get("code") != 0:
+			msg = first.get("message") if isinstance(first, dict) else "请求失败"
+			raise RuntimeError(f"获取 {pool} 卡池记录失败：{msg or '请求失败'}")
 
-	all_records: list[dict[str, Any]] = [r for r in records if isinstance(r, dict)]
-	for page in range(2, max(2, pages + 1)):
-		resp = api_request("GET", f"/api/endfield/gacha/records?page={page}", headers=headers)
-		if not isinstance(resp, dict) or resp.get("code") != 0:
-			msg = resp.get("message") if isinstance(resp, dict) else "请求失败"
-			raise RuntimeError(f"获取第 {page} 页失败：{msg or '请求失败'}")
-		page_data = resp.get("data") if isinstance(resp.get("data"), dict) else {}
-		page_records = page_data.get("records") if isinstance(page_data.get("records"), list) else []
-		all_records.extend([r for r in page_records if isinstance(r, dict)])
+		data = first.get("data") if isinstance(first.get("data"), dict) else {}
+		if not meta_ref:
+			meta_ref = data
+
+		records = data.get("records") if isinstance(data.get("records"), list) else []
+		pages = _safe_int(data.get("pages"), 1)
+		all_records.extend([r for r in records if isinstance(r, dict)])
+
+		for page in range(2, max(2, pages + 1)):
+			resp = api_request("GET", f"/api/endfield/gacha/records?pools={pool}&page={page}", headers=headers)
+			if not isinstance(resp, dict) or resp.get("code") != 0:
+				msg = resp.get("message") if isinstance(resp, dict) else "请求失败"
+				raise RuntimeError(f"获取 {pool} 卡池第 {page} 页失败：{msg or '请求失败'}")
+			page_data = resp.get("data") if isinstance(resp.get("data"), dict) else {}
+			page_records = page_data.get("records") if isinstance(page_data.get("records"), list) else []
+			all_records.extend([r for r in page_records if isinstance(r, dict)])
 
 	all_records.sort(key=lambda item: _safe_int(item.get("gacha_ts"), 0), reverse=True)
-	return all_records, data
+
+	stats = {
+		"total_count": len(all_records),
+		"star6_count": sum(1 for r in all_records if _safe_int(r.get("rarity"), 0) >= 6),
+		"star5_count": sum(1 for r in all_records if _safe_int(r.get("rarity"), 0) == 5),
+		"star4_count": sum(1 for r in all_records if _safe_int(r.get("rarity"), 0) <= 4),
+	}
+	meta_data = dict(meta_ref) if isinstance(meta_ref, dict) else {}
+	meta_data["stats"] = stats
+	meta_data["total"] = len(all_records)
+	return all_records, meta_data
 
 
 def _render_column(
@@ -270,9 +288,8 @@ def _render_column(
 
 	y = 66
 	for pool_id, pool_name, records in pool_blocks:
-		draw.text((12, y), pool_id or "unknown_pool", fill="#1f2937", font=text_font)
-		draw.text((12, y + 22), pool_name or "未知卡池", fill="#4b5563", font=text_font)
-		y += 46
+		draw.text((12, y), pool_name or "未知卡池", fill="#4b5563", font=text_font)
+		y += 24
 
 		normal_records: list[dict[str, Any]] = []
 		free_records: list[dict[str, Any]] = []
@@ -304,21 +321,23 @@ def _render_column(
 		if free_records:
 			if normal_records:
 				row_top += segment_h + 8
-
-			available_w = width - 24
-			free_count = len(free_records)
-			free_gap = segment_gap
-			free_segment_w = segment_w
-			needed_w = free_count * free_segment_w + max(0, free_count - 1) * free_gap
-			if needed_w > available_w:
-				free_gap = 1
-				free_segment_w = max(2, (available_w - max(0, free_count - 1) * free_gap) // max(1, free_count))
-
+			draw.text((12, row_top), "免费十连", fill="#2563eb", font=text_font)
+			row_top += 22
 			x = 12
-			for rec in free_records:
+			for idx, rec in enumerate(free_records):
 				rarity = _safe_int(rec.get("rarity"), 4)
-				draw.rectangle((x, row_top, x + free_segment_w, row_top + segment_h), fill=_rarity_color(rarity))
-				x += free_segment_w + free_gap
+				draw.rectangle((x, row_top, x + segment_w, row_top + segment_h), fill=_rarity_color(rarity))
+
+				is_last = idx == len(free_records) - 1
+				if rarity >= 6 and not is_last:
+					x = 12
+					row_top += segment_h + 8
+					continue
+
+				x += segment_w + segment_gap
+				if x + segment_w >= width - 10 and not is_last:
+					x = 12
+					row_top += segment_h + 8
 
 		y = row_top + segment_h + 16
 		draw.line((12, y, width - 12, y), fill="#d1d5db", width=1)
@@ -359,10 +378,10 @@ def _render_gacha_analysis_image(
 	small_font = _pick_font(16)
 
 	columns = [
-		_render_column("special_xxxx", build_blocks("special"), 420, "#ffffff", title_font, small_font),
-		_render_column("standard", build_blocks("standard"), 420, "#ffffff", title_font, small_font),
-		_render_column("beginner", build_blocks("beginner"), 420, "#ffffff", title_font, small_font),
-		_render_column("weaponbox_xxxx", build_blocks("weapon"), 420, "#ffffff", title_font, small_font),
+		_render_column("限定寻访", build_blocks("special"), 420, "#ffffff", title_font, small_font),
+		_render_column("常驻寻访", build_blocks("standard"), 420, "#ffffff", title_font, small_font),
+		_render_column("新手寻访", build_blocks("beginner"), 420, "#ffffff", title_font, small_font),
+		_render_column("武器寻访", build_blocks("weapon"), 420, "#ffffff", title_font, small_font),
 	]
 
 	content_h = max(col.height for col in columns)
@@ -382,7 +401,7 @@ def _render_gacha_analysis_image(
 	end_text = _to_datetime_text(records[-1].get("gacha_ts")) if records else "未知"
 
 	draw.rectangle((0, 0, width, 96), fill="#eef2ff")
-	draw.text((12, 14), "终末地抽卡分析（全量记录）", fill="#111827", font=_pick_bold_font(34))
+	draw.text((12, 14), "终末地抽卡分析", fill="#111827", font=_pick_bold_font(34))
 	draw.text(
 		(12, 62),
 		f"UID: {role_id or '未知'}  总抽数: {total}  6★: {star6}  5★: {star5}  4★: {star4}",
@@ -391,7 +410,7 @@ def _render_gacha_analysis_image(
 	)
 	draw.text(
 		(12, 102),
-		f"时间范围: {start_text}  →  {end_text}    说明: 按时间从旧到新，横向累加；每出现 6★ 自动换行",
+		f"时间范围: {start_text}  →  {end_text}",
 		fill="#374151",
 		font=small_font,
 	)
