@@ -274,23 +274,23 @@ def _render_column(
 		draw.text((12, y + 22), pool_name or "未知卡池", fill="#4b5563", font=text_font)
 		y += 46
 
+		normal_records: list[dict[str, Any]] = []
+		free_records: list[dict[str, Any]] = []
+		for rec in records:
+			is_free_value = rec.get("is_free")
+			is_free = is_free_value is True or str(is_free_value).strip().lower() in {"true", "1"}
+			if is_free:
+				free_records.append(rec)
+			else:
+				normal_records.append(rec)
+
 		x = 12
 		row_top = y
-		for idx, rec in enumerate(records):
-			is_free = str(rec.get("is_free") or "").lower() == "true"
-			if is_free and x != 12:
-				x = 12
-				row_top += segment_h + 8
-
+		for idx, rec in enumerate(normal_records):
 			rarity = _safe_int(rec.get("rarity"), 4)
 			draw.rectangle((x, row_top, x + segment_w, row_top + segment_h), fill=_rarity_color(rarity))
 
-			is_last = idx == len(records) - 1
-			if is_free and not is_last:
-				x = 12
-				row_top += segment_h + 8
-				continue
-
+			is_last = idx == len(normal_records) - 1
 			if rarity >= 6 and not is_last:
 				x = 12
 				row_top += segment_h + 8
@@ -300,6 +300,25 @@ def _render_column(
 			if x + segment_w >= width - 10 and not is_last:
 				x = 12
 				row_top += segment_h + 8
+
+		if free_records:
+			if normal_records:
+				row_top += segment_h + 8
+
+			available_w = width - 24
+			free_count = len(free_records)
+			free_gap = segment_gap
+			free_segment_w = segment_w
+			needed_w = free_count * free_segment_w + max(0, free_count - 1) * free_gap
+			if needed_w > available_w:
+				free_gap = 1
+				free_segment_w = max(2, (available_w - max(0, free_count - 1) * free_gap) // max(1, free_count))
+
+			x = 12
+			for rec in free_records:
+				rarity = _safe_int(rec.get("rarity"), 4)
+				draw.rectangle((x, row_top, x + free_segment_w, row_top + segment_h), fill=_rarity_color(rarity))
+				x += free_segment_w + free_gap
 
 		y = row_top + segment_h + 16
 		draw.line((12, y, width - 12, y), fill="#d1d5db", width=1)
