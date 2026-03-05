@@ -259,7 +259,7 @@ def _fetch_all_gacha_records(
 def _render_column(
 	title: str,
 	records: list[dict[str, Any]],
-	width: int,
+	min_width: int,
 	bg: str,
 	title_font: ImageFont.ImageFont,
 	text_font: ImageFont.ImageFont,
@@ -270,6 +270,7 @@ def _render_column(
 	segment_h = 18
 	segment_gap = 2
 	left = 12
+	right = 12
 
 	def _bar_color(cumulative: int) -> str:
 		if cumulative >= pink_threshold:
@@ -280,6 +281,38 @@ def _render_column(
 
 	pool_names = [str((rec.get("pool_name") or "未知卡池")) for rec in records if isinstance(rec, dict)]
 	pool_group_count = max(1, len(dict.fromkeys(pool_names)))
+
+	def _max_row_segments(items: list[dict[str, Any]]) -> int:
+		if not items:
+			return 1
+		current = 0
+		max_count = 1
+		for idx, rec in enumerate(items):
+			current += 1
+			if current > max_count:
+				max_count = current
+			rarity = _safe_int(rec.get("rarity"), 4)
+			is_last = idx == len(items) - 1
+			if rarity >= 6 and not is_last:
+				current = 0
+		return max_count
+
+	normal_records_all: list[dict[str, Any]] = []
+	free_records_all: list[dict[str, Any]] = []
+	for rec in records:
+		if not isinstance(rec, dict):
+			continue
+		is_free_value = rec.get("is_free")
+		is_free = is_free_value is True or str(is_free_value).strip().lower() in {"true", "1"}
+		if is_free:
+			free_records_all.append(rec)
+		else:
+			normal_records_all.append(rec)
+
+	max_segments = max(_max_row_segments(normal_records_all), _max_row_segments(free_records_all))
+	content_w = left + max_segments * segment_w + max(0, max_segments - 1) * segment_gap + right
+	width = max(min_width, content_w)
+
 	tmp_h = 260 + max(1, len(records)) * 26 + pool_group_count * 44
 	img = Image.new("RGB", (width, tmp_h), bg)
 	draw = ImageDraw.Draw(img)
@@ -307,10 +340,6 @@ def _render_column(
 				continue
 
 			x += segment_w + segment_gap
-			if x + segment_w >= width - 10 and not is_last:
-				x = left
-				row_top += segment_h + 8
-				row_cumulative = 0
 
 		return row_top + segment_h
 
@@ -369,7 +398,8 @@ def _render_gacha_analysis_image(
 
 	content_h = max(col.height for col in columns)
 	top_h = 130
-	width = 420 * 4 + 36
+	column_gap = 12
+	width = 24 + sum(col.width for col in columns) + column_gap * (len(columns) - 1)
 	height = top_h + content_h + 24
 
 	img = Image.new("RGB", (width, height), "#f9fafb")
@@ -402,7 +432,7 @@ def _render_gacha_analysis_image(
 	x = 12
 	for col in columns:
 		img.paste(col, (x, top_h))
-		x += 420
+		x += col.width + column_gap
 
 	buf = io.BytesIO()
 	img.save(buf, format="PNG")
