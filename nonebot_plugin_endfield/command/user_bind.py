@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 import httpx
-from nonebot import get_driver, on_command, require
+from nonebot import get_driver, on_command
 from nonebot.adapters import Bot, Event
 from nonebot.adapters.onebot.v11 import Message, MessageSegment
 from nonebot.exception import ActionFailed
@@ -21,8 +21,6 @@ from ..lib.api import api_request
 
 
 logger = logging.getLogger("nonebot")
-
-require("nonebot_plugin_localstore")
 
 user_bind = on_command("终末地绑定", aliases={"endfield绑定", "终末地扫码绑定"})
 switch_bind = on_command("终末地切换账号", aliases={"endfield切换账号", "终末地账号切换"})

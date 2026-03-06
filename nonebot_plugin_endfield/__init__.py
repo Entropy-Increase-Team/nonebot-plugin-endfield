@@ -1,8 +1,10 @@
-from nonebot import get_driver
+from nonebot import get_driver, require
 from nonebot.plugin import PluginMetadata
 import logging
 
 from .config import Config
+
+require("nonebot_plugin_localstore")
 
 __plugin_meta__ = PluginMetadata(
     name="Endfield",

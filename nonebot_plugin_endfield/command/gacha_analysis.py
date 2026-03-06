@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
-from nonebot import get_driver, on_command, on_message, require
+from nonebot import get_driver, on_command, on_message
 from nonebot.adapters import Bot, Event
 from nonebot.adapters.onebot.v11 import GroupMessageEvent, MessageEvent, MessageSegment
 from nonebot.exception import FinishedException
@@ -20,8 +20,6 @@ from .user_bind import TABLE_NAME, _get_db_path
 
 
 logger = logging.getLogger("nonebot")
-
-require("nonebot_plugin_localstore")
 
 POLL_INTERVAL_SECONDS = 1.5
 POLL_TIMEOUT_SECONDS = 180
