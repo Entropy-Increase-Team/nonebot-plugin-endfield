@@ -33,3 +33,6 @@ dependencies = [
 [project.urls]
 "Homepage" = "https://github.com/TakesBot/nonebot-plugin-endfield"
 "Bug Tracker" = "https://github.com/TakesBot/nonebot-plugin-endfield/issues"
+
+[project.entry-points."nonebot.plugin"]
+endfield = "nonebot_plugin_endfield"
