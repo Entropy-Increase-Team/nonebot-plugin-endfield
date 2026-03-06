@@ -99,4 +99,4 @@ endfield_api_baseurl=https://end-api.shallow.ink/
 
 ## 许可证
 
-[MIT](./LICENSE)
+[AGPL v3](./LICENSE)
