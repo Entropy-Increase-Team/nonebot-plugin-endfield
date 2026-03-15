@@ -626,6 +626,12 @@ def render_gacha_analysis_image(stats_data: Dict[str, Any], cache_data: Dict[str
     if qq_user_id:
         avatar_candidates.append(f"https://q1.qlogo.cn/g?b=qq&nk={qq_user_id}&s=100")
     avatar_url = next((url for url in avatar_candidates if url), "")
+    avatar_html = ""
+    if avatar_url:
+        avatar_html = (
+            f'<img src="{escape_text(avatar_url)}" alt="头像" class="user-avatar" '
+            'onerror="this.style.display=\'none\'">'
+        )
 
     analysis_time = escape_text(time_text) if time_text else ""
     sync_hint = "若需刷新，发送 /终末地同步抽卡记录"
@@ -643,7 +649,7 @@ def render_gacha_analysis_image(stats_data: Dict[str, Any], cache_data: Dict[str
 <div class="gacha-analysis-container">
     <div class="top-bar">
         <div class="user-info">
-            {f'<img src="{escape_text(avatar_url)}" alt="头像" class="user-avatar" onerror="this.style.display=\'none\'">' if avatar_url else ''}
+            {avatar_html}
             <div class="user-details">
                 <div class="user-name">{escape_text(nickname)}</div>
                 <div class="user-uid">UID {escape_text(uid)}</div>
