@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "nonebot-plugin-endfield"
-version = "0.2.0"
+version = "0.2.1
 authors = [
   { name="NekoTC", email="1719252259@qq.com" },
 ]
