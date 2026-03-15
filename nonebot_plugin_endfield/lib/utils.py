@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Any, Optional
 
 from nonebot import get_plugin_config
-import nonebot_plugin_localstore as store
 
 from ..config import Config
 
@@ -25,6 +24,8 @@ def get_data_dir() -> Path:
 	global _PLUGIN_DATA_DIR
 	if _PLUGIN_DATA_DIR is None:
 		try:
+			import nonebot_plugin_localstore as store
+
 			_PLUGIN_DATA_DIR = Path(store.get_data_dir(PLUGIN_NAME))
 		except Exception:
 			_PLUGIN_DATA_DIR = Path.cwd() / ".nonebot_plugin_endfield"

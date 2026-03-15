@@ -3,10 +3,10 @@ import asyncio
 from nonebot import require, logger, get_plugin_config, get_driver
 from nonebot.plugin import PluginMetadata
 
+require("nonebot_plugin_localstore")
+
 from .config import Config
 from .lib.render import ensure_playwright_browser_installed
-
-require("nonebot_plugin_localstore")
 
 __plugin_meta__ = PluginMetadata(
     name="Endfield",
