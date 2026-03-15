@@ -5,6 +5,7 @@ import sqlite3
 import time
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import quote, urlsplit, urlunsplit
 
 from nonebot import get_driver, on_command, on_message, logger
 from nonebot.adapters import Bot, Event
@@ -22,6 +23,7 @@ POLL_INTERVAL_SECONDS = 1.5
 POLL_TIMEOUT_SECONDS = 180
 PENDING_SELECT_TTL_SECONDS = 300
 GACHA_POOLS = ("limited", "standard", "beginner", "weapon")
+_DATA_DIR_LOGGED = False
 
 
 gacha_records = on_command("终末地抽卡记录", aliases={"终末地同步抽卡记录", "终末地更新抽卡记录"}, priority=30, block=True)
@@ -72,8 +74,12 @@ def _load_all_bindings() -> dict[str, list[dict[str, Any]]]:
 
 
 def _cache_dir() -> Path:
+	global _DATA_DIR_LOGGED
 	d = get_data_dir() / "gacha"
 	d.mkdir(parents=True, exist_ok=True)
+	if not _DATA_DIR_LOGGED:
+		logger.debug(f"[终末地插件][抽卡缓存]本地数据目录: {get_data_dir().resolve()}")
+		_DATA_DIR_LOGGED = True
 	return d
 
 
@@ -218,6 +224,134 @@ async def _api_post(path: str, framework_token: Optional[str] = None, data: Opti
 	return await api_request("POST", path, headers=build_headers(framework_token), data=data or {})
 
 
+async def _fetch_gacha_icon_map(framework_token: Optional[str] = None) -> dict[str, str]:
+	try:
+		def _normalize_icon_url(raw: str) -> str:
+			url = str(raw or "").strip()
+			if not url:
+				return ""
+
+			def _escape_http_url_path(v: str) -> str:
+				try:
+					parts = urlsplit(v)
+					if parts.scheme not in ("http", "https"):
+						return v
+					escaped_path = quote(parts.path or "", safe="/%:@!$&'()*+,;=-._~")
+					return urlunsplit((parts.scheme, parts.netloc, escaped_path, parts.query, parts.fragment))
+				except Exception:
+					return v
+
+			if url.startswith("//"):
+				return _escape_http_url_path("https:" + url)
+			if url.startswith(("http://", "https://", "file:///", "data:")):
+				return _escape_http_url_path(url)
+			base = str(get_driver().config.dict().get("endfield_api_baseurl") or "").strip()
+			if not base:
+				return url
+			if url.startswith("/"):
+				return _escape_http_url_path(f"{base.rstrip('/')}{url}")
+			return _escape_http_url_path(f"{base.rstrip('/')}/{url.lstrip('/')}")
+
+		def _walk_items(node: Any) -> list[dict[str, Any]]:
+			out: list[dict[str, Any]] = []
+			if isinstance(node, list):
+				for it in node:
+					out.extend(_walk_items(it))
+				return out
+			if isinstance(node, dict):
+				out.append(node)
+				for key in (
+					"data",
+					"list",
+					"items",
+					"results",
+					"operators",
+					"chars",
+					"weapons",
+					"pool_chars",
+					"poolChars",
+					"pools",
+					"records",
+				):
+					value = node.get(key)
+					if isinstance(value, (list, dict)):
+						out.extend(_walk_items(value))
+			return out
+
+		icon_map: dict[str, str] = {}
+
+		async def _collect_from_endpoint(
+			path: str,
+			params: Optional[dict[str, Any]] = None,
+			*,
+			prefer_icon_url: bool = False,
+		) -> None:
+			res = await _api_get(path, framework_token, params)
+			for item in _walk_items(res):
+				name = str(
+					item.get("name")
+					or item.get("weaponName")
+					or item.get("weapon_name")
+					or item.get("name_cn")
+					or item.get("char_name")
+					or item.get("item_name")
+					or item.get("weapon_name")
+					or ""
+				).strip()
+				icon_raw = ""
+				if prefer_icon_url:
+					icon_raw = str(
+						item.get("iconUrl")
+						or item.get("icon_url")
+						or item.get("icon")
+						or item.get("avatarSqUrl")
+						or item.get("avatar_sq_url")
+						or item.get("avatarRtUrl")
+						or item.get("avatar_rt_url")
+						or item.get("avatarUrl")
+						or item.get("avatar_url")
+						or item.get("image")
+						or item.get("cover")
+						or ""
+					)
+				else:
+					icon_raw = str(
+						item.get("avatarSqUrl")
+						or item.get("avatar_sq_url")
+						or item.get("avatarRtUrl")
+						or item.get("avatar_rt_url")
+						or item.get("avatarUrl")
+						or item.get("avatar_url")
+						or item.get("iconUrl")
+						or item.get("icon_url")
+						or item.get("icon")
+						or item.get("image")
+						or item.get("cover")
+						or ""
+					)
+				icon = _normalize_icon_url(
+					icon_raw
+				)
+				if name and icon and name not in icon_map:
+					icon_map[name] = icon
+
+		# 角色基础图标
+		await _collect_from_endpoint("/api/endfield/search/chars")
+		# 武器基础图标（按你的接口优先 iconUrl）
+		await _collect_from_endpoint("/api/endfield/search/weapons", prefer_icon_url=True)
+		# 卡池角色/武器图标（包含武器头像）
+		await _collect_from_endpoint("/api/endfield/gacha/pool-chars")
+		await _collect_from_endpoint("/api/endfield/gacha/pool-chars", {"pool_type": "weapon"})
+		await _collect_from_endpoint("/api/endfield/gacha/pool-chars", {"pool_type": "limited"})
+		await _collect_from_endpoint("/api/endfield/gacha/pool-chars", {"pool_type": "standard"})
+		await _collect_from_endpoint("/api/endfield/gacha/pool-chars", {"pool_type": "beginner"})
+		logger.debug(f"[终末地插件][抽卡图标]已加载 icon_map 条目数: {len(icon_map)}")
+
+		return icon_map
+	except Exception:
+		return {}
+
+
 async def _refresh_local_cache_from_cloud(framework_token: str, user_id: str, role_id: str) -> bool:
 	for attempt in range(1, 4):
 		try:
@@ -257,14 +391,32 @@ async def _refresh_local_cache_from_cloud(framework_token: str, user_id: str, ro
 				note_data = await _api_get("/api/endfield/note", framework_token)
 				note_payload = (note_data or {}).get("data") if isinstance((note_data or {}).get("data"), dict) else {}
 				base = note_payload.get("base") if isinstance(note_payload.get("base"), dict) else {}
+				note_user_info = dict(user_info)
 				avatar_url = str(base.get("avatarUrl") or base.get("avatar") or "").strip()
+				nickname = str(base.get("name") or base.get("nickname") or "").strip()
+				game_uid = str(base.get("uid") or base.get("roleId") or "").strip()
+				if nickname:
+					note_user_info["nickname"] = nickname
+				if game_uid and not note_user_info.get("game_uid"):
+					note_user_info["game_uid"] = game_uid
 				if avatar_url:
-					user_info = dict(user_info)
-					user_info["avatar_url"] = avatar_url
+					note_user_info["avatar_url"] = avatar_url
+				if note_user_info != user_info:
+					user_info = note_user_info
 					stats_payload = dict(stats_payload)
 					stats_payload["user_info"] = user_info
 			except Exception:
 				pass
+
+			try:
+				up_info = await _get_bili_current_up(framework_token)
+				if isinstance(up_info, dict):
+					stats_payload = dict(stats_payload)
+					stats_payload["up_info"] = up_info
+			except Exception:
+				pass
+
+			gacha_icon_map = await _fetch_gacha_icon_map(framework_token)
 
 			payload = {
 				"version": 1,
@@ -273,6 +425,7 @@ async def _refresh_local_cache_from_cloud(framework_token: str, user_id: str, ro
 				"updated_at": int(time.time() * 1000),
 				"stats_data": stats_payload,
 				"records_by_pool": records_by_pool,
+				"gacha_icon_map": gacha_icon_map,
 			}
 			if not _write_gacha_cache(user_id, role_id, payload):
 				return False
@@ -367,6 +520,14 @@ def _to_image_segment(image_bytes: bytes) -> MessageSegment:
 
 
 async def _get_bili_current_up(framework_token: str) -> dict[str, Any]:
+	up_info: dict[str, Any] = {
+		"upCharNames": [],
+		"upWeaponName": "",
+		"activeCharPoolName": "",
+		"activeWeaponPoolName": "",
+		"poolUpMap": {},
+	}
+
 	try:
 		res = await _api_get("/api/bili-wiki/activities", framework_token)
 		data = (res or {}).get("data") or {}
@@ -377,14 +538,141 @@ async def _get_bili_current_up(framework_token: str) -> dict[str, Any]:
 		active = [x for x in items if x.get("is_active") is True]
 		char = next((x for x in active if x.get("type") == "特许寻访"), None)
 		weapon = next((x for x in active if x.get("type") == "武库申领"), None)
-		up_char_names = [str(char.get("up")).strip()] if char and str(char.get("up", "")).strip() else []
-		up_weapon_name = str(weapon.get("up")).strip() if weapon and str(weapon.get("up", "")).strip() else ""
-		return {
-			"upCharNames": up_char_names,
-			"upWeaponName": up_weapon_name,
-		}
+		if char:
+			up_name = str(char.get("up") or "").strip()
+			if up_name:
+				up_info["upCharNames"] = [up_name]
+			name = str(char.get("name") or "").strip()
+			if "·" in name:
+				up_info["activeCharPoolName"] = name.split("·", 1)[1].strip()
+		if weapon:
+			up_name = str(weapon.get("up") or "").strip()
+			if up_name:
+				up_info["upWeaponName"] = up_name
+			name = str(weapon.get("name") or "").strip()
+			if "·" in name:
+				up_info["activeWeaponPoolName"] = name.split("·", 1)[1].strip()
+
+		for item in items:
+			name = str(item.get("name") or "").strip()
+			up_name = str(item.get("up") or "").strip()
+			if name and up_name and "·" in name:
+				up_info["poolUpMap"][name.split("·", 1)[1].strip()] = up_name
 	except Exception:
-		return {"upCharNames": [], "upWeaponName": ""}
+		pass
+
+	if not up_info["upCharNames"] or not up_info["upWeaponName"]:
+		try:
+			res = await _api_get("/api/endfield/gacha/global-stats", framework_token)
+			stats_data = (res or {}).get("data") if isinstance((res or {}).get("data"), dict) else res
+			stats_obj = (stats_data or {}).get("stats") if isinstance((stats_data or {}).get("stats"), dict) else (stats_data or {})
+			current_pool = stats_obj.get("current_pool") if isinstance(stats_obj.get("current_pool"), dict) else {}
+
+			if not up_info["upCharNames"]:
+				up_chars = current_pool.get("up_char_names") or []
+				if isinstance(up_chars, list):
+					up_info["upCharNames"] = [str(x).strip() for x in up_chars if str(x).strip()]
+				if not up_info["upCharNames"]:
+					up_char_name = str(current_pool.get("up_char_name") or "").strip()
+					if up_char_name:
+						up_info["upCharNames"] = [up_char_name]
+
+			if not up_info["upWeaponName"]:
+				up_weapon_name = str(current_pool.get("up_weapon_name") or "").strip()
+				if up_weapon_name:
+					up_info["upWeaponName"] = up_weapon_name
+
+			for period in stats_obj.get("pool_periods") or []:
+				if not isinstance(period, dict):
+					continue
+				pool_name = str(period.get("pool_name") or "").strip()
+				up_chars = period.get("up_char_names") or []
+				if pool_name and isinstance(up_chars, list) and up_chars:
+					up_name = str(up_chars[0]).strip()
+					if up_name:
+						up_info["poolUpMap"][pool_name] = up_name
+
+			for period in stats_obj.get("weapon_pool_periods") or []:
+				if not isinstance(period, dict):
+					continue
+				pool_name = str(period.get("pool_name") or "").strip()
+				up_names = period.get("up_weapon_names") or []
+				if pool_name and isinstance(up_names, list) and up_names:
+					up_name = str(up_names[0]).strip()
+					if up_name:
+						up_info["poolUpMap"][pool_name] = up_name
+		except Exception:
+			pass
+
+	return up_info
+
+
+async def _refresh_analysis_context(
+	framework_token: str,
+	user_id: str,
+	role_id: str,
+	cache_data: Optional[dict[str, Any]],
+) -> tuple[Optional[dict[str, Any]], dict[str, Any]]:
+	base_cache = dict(cache_data or {})
+	stats_payload: Optional[dict[str, Any]] = None
+
+	stats_res = await _api_get("/api/endfield/gacha/stats", framework_token)
+	if isinstance(stats_res, dict):
+		stats_payload = (stats_res.get("data") if isinstance(stats_res.get("data"), dict) else stats_res) or None
+
+	if not isinstance(stats_payload, dict):
+		stats_payload = base_cache.get("stats_data") if isinstance(base_cache.get("stats_data"), dict) else None
+
+	if not isinstance(stats_payload, dict):
+		return None, base_cache
+
+	user_info = stats_payload.get("user_info") if isinstance(stats_payload.get("user_info"), dict) else {}
+	merged_user_info = dict(user_info)
+
+	try:
+		note_data = await _api_get("/api/endfield/note", framework_token)
+		note_payload = (note_data or {}).get("data") if isinstance((note_data or {}).get("data"), dict) else {}
+		base = note_payload.get("base") if isinstance(note_payload.get("base"), dict) else {}
+		avatar_url = str(base.get("avatarUrl") or base.get("avatar") or "").strip()
+		nickname = str(base.get("name") or base.get("nickname") or "").strip()
+		game_uid = str(base.get("uid") or base.get("roleId") or "").strip()
+		if avatar_url:
+			merged_user_info["avatar_url"] = avatar_url
+		if nickname:
+			merged_user_info["nickname"] = nickname
+		if game_uid and not merged_user_info.get("game_uid"):
+			merged_user_info["game_uid"] = game_uid
+	except Exception:
+		pass
+
+	if merged_user_info != user_info:
+		stats_payload = dict(stats_payload)
+		stats_payload["user_info"] = merged_user_info
+
+	try:
+		up_info = await _get_bili_current_up(framework_token)
+		if isinstance(up_info, dict):
+			stats_payload = dict(stats_payload)
+			stats_payload["up_info"] = up_info
+	except Exception:
+		pass
+
+	try:
+		gacha_icon_map = await _fetch_gacha_icon_map(framework_token)
+		if isinstance(gacha_icon_map, dict) and gacha_icon_map:
+			base_cache["gacha_icon_map"] = gacha_icon_map
+	except Exception:
+		pass
+
+	base_cache["version"] = int(base_cache.get("version") or 1)
+	base_cache["user_id"] = str(user_id)
+	base_cache["role_id"] = str(role_id)
+	base_cache["updated_at"] = int(time.time() * 1000)
+	base_cache["stats_data"] = stats_payload
+
+	if _write_gacha_cache(user_id, role_id, base_cache):
+		return stats_payload, base_cache
+	return stats_payload, (cache_data or {})
 
 
 async def _sync_gacha(
@@ -500,7 +788,7 @@ async def _start_fetch_and_poll(
 			progress_msg = _format_progress_msg(message or f"正在查询{current_pool}...", user_id, qq_name)
 			if progress_msg and progress_msg != last_progress_message:
 				last_progress_message = progress_msg
-				logger.info(f"[终末地插件][抽卡同步] {progress_msg}")
+				logger.debug(f"[终末地插件][抽卡同步] {progress_msg}")
 
 		if status == "failed":
 			err = status_data.get("error") or message or "未知错误"
@@ -522,14 +810,14 @@ async def _start_fetch_and_poll(
 					image_bytes = await asyncio.to_thread(render_gacha_analysis_image, stats_data, cache_data)
 					return _to_image_segment(image_bytes)
 				except Exception as e:
-					logger.warning(f"[终末地插件][抽卡分析]同步后渲染图失败，回退文本: {e}")
+					logger.debug(f"[终末地插件][抽卡分析]同步后渲染图失败，回退文本: {e}")
 					return sync_msg + "\n\n" + _simple_analysis_text(stats_data, cache_data)
 			if after_sync_show_records and cache_data:
 				try:
 					image_bytes = await asyncio.to_thread(render_gacha_records_image, cache_data, 1)
 					return _to_image_segment(image_bytes)
 				except Exception as e:
-					logger.warning(f"[终末地插件][抽卡记录]同步后渲染图失败，回退文本: {e}")
+					logger.debug(f"[终末地插件][抽卡记录]同步后渲染图失败，回退文本: {e}")
 					return sync_msg + "\n\n" + _simple_records_text(cache_data, page=1)
 			return sync_msg
 
@@ -553,6 +841,7 @@ async def handle_gacha_records(event: MessageEvent):
 		await gacha_records.finish("未绑定终末地账号，请先发送“终末地绑定”完成绑定。")
 
 	role_id = binding.get("role_id") or ""
+	framework_token = binding.get("framework_token") or ""
 	cache_data = _read_gacha_cache(user_id, role_id)
 	stats_data = (cache_data or {}).get("stats_data") if isinstance((cache_data or {}).get("stats_data"), dict) else None
 	has_record = _parse_stats_has_records(stats_data)
@@ -586,7 +875,7 @@ async def handle_gacha_records(event: MessageEvent):
 	try:
 		image_bytes = await asyncio.to_thread(render_gacha_records_image, cache_data, page)
 	except Exception as e:
-		logger.warning(f"[终末地插件][抽卡记录]渲染图失败，回退文本: {e}")
+		logger.debug(f"[终末地插件][抽卡记录]渲染图失败，回退文本: {e}")
 		await gacha_records.finish(_simple_records_text(cache_data, page=page))
 	await gacha_records.finish(_to_image_segment(image_bytes))
 
@@ -599,6 +888,7 @@ async def handle_gacha_analysis(event: MessageEvent):
 		await gacha_analysis.finish("未绑定终末地账号，请先发送“终末地绑定”完成绑定。")
 
 	role_id = binding.get("role_id") or ""
+	framework_token = str(binding.get("framework_token") or "")
 	cache_data = _read_gacha_cache(user_id, role_id)
 	stats_data = (cache_data or {}).get("stats_data") if isinstance((cache_data or {}).get("stats_data"), dict) else None
 	has_record = _parse_stats_has_records(stats_data)
@@ -613,10 +903,20 @@ async def handle_gacha_analysis(event: MessageEvent):
 		)
 		await gacha_analysis.finish(text)
 
+	if framework_token:
+		try:
+			fresh_stats, fresh_cache = await _refresh_analysis_context(framework_token, user_id, role_id, cache_data)
+			if isinstance(fresh_stats, dict):
+				stats_data = fresh_stats
+			if isinstance(fresh_cache, dict):
+				cache_data = fresh_cache
+		except Exception as e:
+			logger.debug(f"[终末地插件][抽卡分析]上下文刷新失败，继续使用本地缓存: {e}")
+
 	try:
 		image_bytes = await asyncio.to_thread(render_gacha_analysis_image, stats_data, cache_data or {})
 	except Exception as e:
-		logger.warning(f"[终末地插件][抽卡分析]渲染图失败，回退文本: {e}")
+		logger.debug(f"[终末地插件][抽卡分析]渲染图失败，回退文本: {e}")
 		await gacha_analysis.finish(_simple_analysis_text(stats_data, cache_data or {}))
 	await gacha_analysis.finish(_to_image_segment(image_bytes))
 
@@ -693,7 +993,7 @@ async def handle_gacha_global(event: MessageEvent):
 	try:
 		image_bytes = await asyncio.to_thread(render_gacha_global_stats_image, stats_data, keyword)
 	except Exception as e:
-		logger.warning(f"[终末地插件][全服抽卡统计]渲染图失败，回退文本: {e}")
+		logger.debug(f"[终末地插件][全服抽卡统计]渲染图失败，回退文本: {e}")
 		await gacha_global.finish("\n".join(lines))
 	await gacha_global.finish(_to_image_segment(image_bytes))
 

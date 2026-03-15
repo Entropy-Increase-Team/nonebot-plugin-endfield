@@ -7,30 +7,31 @@ import sqlite3
 from pathlib import Path
 from typing import Any, Optional
 
-from nonebot import get_driver
+from nonebot import get_plugin_config
 import nonebot_plugin_localstore as store
 
 from ..config import Config
 
 
 TABLE_NAME = "endfield_bindings_v3"
+PLUGIN_DATA_DIR = store.get_plugin_data_dir()
+PLUGIN_DB_PATH = store.get_plugin_data_file("endfield_bindings_v3.db")
+PLUGIN_CONFIG = get_plugin_config(Config)
 
 
 def get_data_dir() -> Path:
 	"""获取插件数据目录"""
-	return store.get_plugin_data_dir()
+	return PLUGIN_DATA_DIR
 
 
 def get_db_path() -> Path:
 	"""获取数据库文件路径"""
-	return store.get_plugin_data_file("endfield_bindings_v3.db")
+	return PLUGIN_DB_PATH
 
 
 def get_api_key() -> Optional[str]:
 	"""获取 API Key"""
-	cfg = Config()
-	driver = get_driver()
-	return getattr(driver.config, "endfield_api_key", None) or cfg.endfield_api_key
+	return PLUGIN_CONFIG.endfield_api_key
 
 
 def build_headers(framework_token: Optional[str] = None) -> dict[str, str]:
