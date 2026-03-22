@@ -13,7 +13,6 @@ from ..config import Config
 
 
 TABLE_NAME = "endfield_bindings_v3"
-PLUGIN_NAME = "nonebot_plugin_endfield"
 _PLUGIN_DATA_DIR: Path | None = None
 _PLUGIN_DB_PATH: Path | None = None
 PLUGIN_CONFIG = get_plugin_config(Config)
@@ -26,7 +25,7 @@ def get_data_dir() -> Path:
 		try:
 			import nonebot_plugin_localstore as store
 
-			_PLUGIN_DATA_DIR = Path(store.get_data_dir(PLUGIN_NAME))
+			_PLUGIN_DATA_DIR = Path(store.get_plugin_data_dir())
 		except Exception:
 			_PLUGIN_DATA_DIR = Path.cwd() / ".nonebot_plugin_endfield"
 		_PLUGIN_DATA_DIR.mkdir(parents=True, exist_ok=True)
