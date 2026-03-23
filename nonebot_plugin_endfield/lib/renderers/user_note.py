@@ -1,4 +1,5 @@
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict
 
 from .helpers import escape_text
@@ -15,6 +16,7 @@ def render_user_note_card(note_data: Dict[str, Any], local_role_id: str | None, 
     daily = data.get("dailyMission") if isinstance(data.get("dailyMission"), dict) else {}
     stamina = data.get("stamina") if isinstance(data.get("stamina"), dict) else {}
     chars = data.get("chars") if isinstance(data.get("chars"), list) else []
+    achieve = data.get("achieve") if isinstance(data.get("achieve"), dict) else {}
 
     def _safe_int(value: Any, default: int = 0) -> int:
         try:
@@ -61,6 +63,62 @@ def render_user_note_card(note_data: Dict[str, Any], local_role_id: str | None, 
     avatar_url = str(base.get("avatarUrl") or "").strip()
     mission = base.get("mainMission") if isinstance(base.get("mainMission"), dict) else {}
     mission_text = str(mission.get("description") or "无主线信息")
+
+    medals = achieve.get("achieveMedals") if isinstance(achieve.get("achieveMedals"), list) else []
+    display = achieve.get("display") if isinstance(achieve.get("display"), dict) else {}
+    achieve_count = _safe_int(achieve.get("count"))
+
+    medal_by_id: dict[str, dict[str, Any]] = {}
+
+    def _norm_id(value: Any) -> str:
+        return str(value or "").strip().lower()
+
+    for item in medals:
+        if not isinstance(item, dict):
+            continue
+        achv_data = item.get("achievementData") if isinstance(item.get("achievementData"), dict) else {}
+        for raw_id in (
+            achv_data.get("id"),
+            item.get("id"),
+            item.get("achievementId"),
+            item.get("medalId"),
+        ):
+            medal_id = _norm_id(raw_id)
+            if medal_id:
+                medal_by_id[medal_id] = item
+
+    display_slots: list[tuple[int, str]] = []
+    for i in range(1, 11):
+        slot_medal_id = _norm_id(display.get(str(i)) or display.get(i))
+        display_slots.append((i, slot_medal_id))
+
+    medal_cards: list[str] = []
+    for slot_index, medal_id in display_slots:
+        item = medal_by_id.get(medal_id) if medal_id else None
+        achv_data = item.get("achievementData") if isinstance(item, dict) and isinstance(item.get("achievementData"), dict) else {}
+        is_plated = bool(item.get("isPlated")) if isinstance(item, dict) else False
+        level = _safe_int(item.get("level")) if isinstance(item, dict) else 0
+        init_icon = str(achv_data.get("initIcon") or "").strip()
+        plated_icon = str(achv_data.get("platedIcon") or "").strip()
+        reforge_icon = str(achv_data.get(f"reforge{level}Icon") or "").strip()
+        icon_url = reforge_icon or (plated_icon if (is_plated and plated_icon) else init_icon)
+        name = str(achv_data.get("name") or f"徽章{slot_index}").strip()
+
+        if icon_url:
+            icon_html = (
+                f"<img src=\"{escape_text(icon_url)}\" alt=\"{escape_text(name)}\" "
+                "loading=\"lazy\" onerror=\"this.remove()\" />"
+            )
+        else:
+            icon_html = f"<span class=\"road-empty\">{slot_index}</span>"
+
+        medal_cards.append(
+            f"<article class=\"road-item\" title=\"{escape_text(name)}\">"
+            f"<div class=\"road-icon\">{icon_html}</div>"
+            "</article>"
+        )
+
+    road_flow = "".join(medal_cards)
 
     sorted_chars = sorted(
         [item for item in chars if isinstance(item, dict)],
@@ -147,6 +205,11 @@ def render_user_note_card(note_data: Dict[str, Any], local_role_id: str | None, 
       </ul>
     </section>
 
+        <section class="section">
+            <h2 class="section-title">光荣之路（已获得 {achieve_count} 枚）</h2>
+            <div class="road-flow">{road_flow or '<div class="block">暂无展示徽章</div>'}</div>
+        </section>
+
     <section class=\"section\">
       <h2 class=\"section-title\">角色列表（共 {len(sorted_chars)} 名）</h2>
       <div class=\"char-grid\">{''.join(char_cards) or '<div class="block">暂无角色数据</div>'}</div>
@@ -172,5 +235,23 @@ def render_user_note_card(note_data: Dict[str, Any], local_role_id: str | None, 
         "display:flex;flex-direction:column;justify-content:flex-end;box-shadow:inset 0 -40px 80px rgba(15,23,42,0.38);}"
         ".char h3{margin:0 0 6px;font-size:21px;line-height:1.25;}"
         ".char p{margin:0 0 4px;font-size:16px;line-height:1.35;}"
+        ".road-flow{display:grid;grid-template-columns:repeat(10,52px);width:700px;min-height:252px;margin-top:12px;row-gap:0;column-gap:0;overflow:hidden;}"
+        ".road-item{width:126px;height:126px;position:relative;grid-column:span 2;}"
+        ".road-item:nth-child(even){margin-top:-65px}"
+        ".road-item:nth-child(1){grid-row:1;grid-column:1/span 2;}"
+        ".road-item:nth-child(2){grid-row:2;grid-column:2/span 2;}"
+        ".road-item:nth-child(3){grid-row:1;grid-column:3/span 2;}"
+        ".road-item:nth-child(4){grid-row:2;grid-column:4/span 2;}"
+        ".road-item:nth-child(5){grid-row:1;grid-column:5/span 2;}"
+        ".road-item:nth-child(6){grid-row:2;grid-column:6/span 2;}"
+        ".road-item:nth-child(7){grid-row:1;grid-column:7/span 2;}"
+        ".road-item:nth-child(8){grid-row:2;grid-column:8/span 2;}"
+        ".road-item:nth-child(9){grid-row:1;grid-column:9/span 2;}"
+        ".road-item:nth-child(10){grid-row:2;grid-column:10/span 2;}"
+        ".road-icon{width:126px;height:126px;background:#e2e8f0;display:flex;align-items:center;justify-content:center;"
+        "overflow:hidden;clip-path:polygon(50% 0%,93.3% 25%,93.3% 75%,50% 100%,6.7% 75%,6.7% 25%);"
+        "box-shadow:0 8px 18px rgba(15,23,42,0.16);position:relative;}"
+        ".road-icon img{width:100%;height:100%;object-fit:cover;display:block;}"
+        ".road-empty{font-size:28px;font-weight:700;color:#475569;}"
     )
     return render_html_to_image(body, width=1280, extra_styles=note_style)

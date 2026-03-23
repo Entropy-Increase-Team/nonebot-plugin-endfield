@@ -5,7 +5,7 @@ import sqlite3
 import time
 from pathlib import Path
 from typing import Any, Optional
-from urllib.parse import quote, urlsplit, urlunsplit
+from urllib.parse import quote, urlencode, urlsplit, urlunsplit
 
 from nonebot import get_driver, on_command, on_message, logger
 from nonebot.adapters import Bot, Event
@@ -211,12 +211,53 @@ def _format_progress_msg(msg: str, user_id: str, user_name: str) -> str:
 	return text.replace("{qq号}", uid).replace("{qqname}", name)
 
 
+def _get_sender_display_name(event: MessageEvent, fallback: str) -> str:
+	sender = getattr(event, "sender", None)
+	if not sender:
+		return fallback
+	card = getattr(sender, "card", None)
+	if card:
+		return str(card)
+	nickname = getattr(sender, "nickname", None)
+	if nickname:
+		return str(nickname)
+	return fallback
+
+
+def _unwrap_response_data(resp: Optional[dict[str, Any]]) -> Any:
+	if isinstance(resp, dict) and isinstance(resp.get("data"), dict):
+		return resp["data"]
+	return resp
+
+
+async def _fetch_note_user_overrides(framework_token: str) -> dict[str, str]:
+	try:
+		note_data = await _api_get("/api/endfield/note", framework_token)
+		note_inner = _unwrap_response_data(note_data)
+		note_payload = note_inner if isinstance(note_inner, dict) else {}
+		base = note_payload.get("base") if isinstance(note_payload.get("base"), dict) else {}
+		avatar_url = str(base.get("avatarUrl") or base.get("avatar") or "").strip()
+		nickname = str(base.get("name") or base.get("nickname") or "").strip()
+		game_uid = str(base.get("uid") or base.get("roleId") or "").strip()
+		overrides: dict[str, str] = {}
+		if avatar_url:
+			overrides["avatar_url"] = avatar_url
+		if nickname:
+			overrides["nickname"] = nickname
+		if game_uid:
+			overrides["game_uid"] = game_uid
+		return overrides
+	except Exception:
+		return {}
+
+
 async def _api_get(path: str, framework_token: Optional[str] = None, params: Optional[dict[str, Any]] = None) -> Optional[dict[str, Any]]:
 	p = path
 	if params:
-		query = "&".join([f"{k}={v}" for k, v in params.items() if v is not None])
+		query = urlencode({k: v for k, v in params.items() if v is not None}, doseq=True)
 		if query:
-			p = f"{path}?{query}"
+			sep = "&" if "?" in path else "?"
+			p = f"{path}{sep}{query}"
 	return await api_request("GET", p, headers=build_headers(framework_token))
 
 
@@ -295,7 +336,6 @@ async def _fetch_gacha_icon_map(framework_token: Optional[str] = None) -> dict[s
 					or item.get("name_cn")
 					or item.get("char_name")
 					or item.get("item_name")
-					or item.get("weapon_name")
 					or ""
 				).strip()
 				icon_raw = ""
@@ -335,16 +375,18 @@ async def _fetch_gacha_icon_map(framework_token: Optional[str] = None) -> dict[s
 				if name and icon and name not in icon_map:
 					icon_map[name] = icon
 
-		# 角色基础图标
+		# 角色/武器基础图标
 		await _collect_from_endpoint("/api/endfield/search/chars")
-		# 武器基础图标（按你的接口优先 iconUrl）
 		await _collect_from_endpoint("/api/endfield/search/weapons", prefer_icon_url=True)
 		# 卡池角色/武器图标（包含武器头像）
-		await _collect_from_endpoint("/api/endfield/gacha/pool-chars")
-		await _collect_from_endpoint("/api/endfield/gacha/pool-chars", {"pool_type": "weapon"})
-		await _collect_from_endpoint("/api/endfield/gacha/pool-chars", {"pool_type": "limited"})
-		await _collect_from_endpoint("/api/endfield/gacha/pool-chars", {"pool_type": "standard"})
-		await _collect_from_endpoint("/api/endfield/gacha/pool-chars", {"pool_type": "beginner"})
+		for params in (
+			None,
+			{"pool_type": "weapon"},
+			{"pool_type": "limited"},
+			{"pool_type": "standard"},
+			{"pool_type": "beginner"},
+		):
+			await _collect_from_endpoint("/api/endfield/gacha/pool-chars", params)
 		logger.debug(f"[终末地插件][抽卡图标]已加载 icon_map 条目数: {len(icon_map)}")
 
 		return icon_map
@@ -387,26 +429,19 @@ async def _refresh_local_cache_from_cloud(framework_token: str, user_id: str, ro
 			stats_payload = (stats_data.get("data") if isinstance(stats_data.get("data"), dict) else stats_data) or {}
 			user_info = stats_payload.get("user_info") if isinstance(stats_payload.get("user_info"), dict) else {}
 
-			try:
-				note_data = await _api_get("/api/endfield/note", framework_token)
-				note_payload = (note_data or {}).get("data") if isinstance((note_data or {}).get("data"), dict) else {}
-				base = note_payload.get("base") if isinstance(note_payload.get("base"), dict) else {}
+			note_overrides = await _fetch_note_user_overrides(framework_token)
+			if note_overrides:
 				note_user_info = dict(user_info)
-				avatar_url = str(base.get("avatarUrl") or base.get("avatar") or "").strip()
-				nickname = str(base.get("name") or base.get("nickname") or "").strip()
-				game_uid = str(base.get("uid") or base.get("roleId") or "").strip()
-				if nickname:
-					note_user_info["nickname"] = nickname
-				if game_uid and not note_user_info.get("game_uid"):
-					note_user_info["game_uid"] = game_uid
-				if avatar_url:
-					note_user_info["avatar_url"] = avatar_url
+				if note_overrides.get("nickname"):
+					note_user_info["nickname"] = note_overrides["nickname"]
+				if note_overrides.get("avatar_url"):
+					note_user_info["avatar_url"] = note_overrides["avatar_url"]
+				if note_overrides.get("game_uid") and not note_user_info.get("game_uid"):
+					note_user_info["game_uid"] = note_overrides["game_uid"]
 				if note_user_info != user_info:
 					user_info = note_user_info
 					stats_payload = dict(stats_payload)
 					stats_payload["user_info"] = user_info
-			except Exception:
-				pass
 
 			try:
 				up_info = await _get_bili_current_up(framework_token)
@@ -629,21 +664,13 @@ async def _refresh_analysis_context(
 	user_info = stats_payload.get("user_info") if isinstance(stats_payload.get("user_info"), dict) else {}
 	merged_user_info = dict(user_info)
 
-	try:
-		note_data = await _api_get("/api/endfield/note", framework_token)
-		note_payload = (note_data or {}).get("data") if isinstance((note_data or {}).get("data"), dict) else {}
-		base = note_payload.get("base") if isinstance(note_payload.get("base"), dict) else {}
-		avatar_url = str(base.get("avatarUrl") or base.get("avatar") or "").strip()
-		nickname = str(base.get("name") or base.get("nickname") or "").strip()
-		game_uid = str(base.get("uid") or base.get("roleId") or "").strip()
-		if avatar_url:
-			merged_user_info["avatar_url"] = avatar_url
-		if nickname:
-			merged_user_info["nickname"] = nickname
-		if game_uid and not merged_user_info.get("game_uid"):
-			merged_user_info["game_uid"] = game_uid
-	except Exception:
-		pass
+	note_overrides = await _fetch_note_user_overrides(framework_token)
+	if note_overrides.get("avatar_url"):
+		merged_user_info["avatar_url"] = note_overrides["avatar_url"]
+	if note_overrides.get("nickname"):
+		merged_user_info["nickname"] = note_overrides["nickname"]
+	if note_overrides.get("game_uid") and not merged_user_info.get("game_uid"):
+		merged_user_info["game_uid"] = note_overrides["game_uid"]
 
 	if merged_user_info != user_info:
 		stats_payload = dict(stats_payload)
@@ -690,7 +717,7 @@ async def _sync_gacha(
 
 	framework_token = binding["framework_token"]
 	status_data = await _api_get("/api/endfield/gacha/sync/status", framework_token)
-	status_inner = (status_data or {}).get("data") if isinstance((status_data or {}).get("data"), dict) else status_data
+	status_inner = _unwrap_response_data(status_data)
 	if (status_inner or {}).get("status") == "syncing":
 		progress = (status_inner or {}).get("progress") or 0
 		completed = (status_inner or {}).get("completed_pools")
@@ -705,7 +732,7 @@ async def _sync_gacha(
 		return "\n".join(msg)
 
 	accounts_data = await _api_get("/api/endfield/gacha/accounts", framework_token)
-	ad = (accounts_data or {}).get("data") if isinstance((accounts_data or {}).get("data"), dict) else accounts_data
+	ad = _unwrap_response_data(accounts_data)
 	accounts = (ad or {}).get("accounts") or []
 	need_select = bool((ad or {}).get("need_select"))
 	if not accounts:
@@ -733,7 +760,7 @@ async def _sync_gacha(
 	account = accounts[0]
 	account_uid = account.get("uid")
 	server_id = _get_account_server_id(account)
-	nickname = event.sender.card if getattr(event.sender, "card", None) else (event.sender.nickname if getattr(event.sender, "nickname", None) else user_id)
+	nickname = _get_sender_display_name(event, user_id)
 
 	if source_from_analysis:
 		await gacha_analysis.send("正在同步抽卡记录，完成后将自动发送分析。")
@@ -833,7 +860,7 @@ def _is_superuser(user_id: str) -> bool:
 @gacha_records.handle()
 async def handle_gacha_records(event: MessageEvent):
 	raw_msg = str(event.get_message()).strip()
-	wants_sync = bool(asyncio.get_running_loop() and any(k in raw_msg for k in ("同步抽卡记录", "更新抽卡记录")))
+	wants_sync = any(k in raw_msg for k in ("同步抽卡记录", "更新抽卡记录"))
 	user_id = str(event.get_user_id())
 
 	binding = get_active_binding(user_id)
@@ -1015,7 +1042,7 @@ async def handle_sync_all(event: MessageEvent):
 		if not token:
 			continue
 		accounts_res = await _api_get("/api/endfield/gacha/accounts", token)
-		accounts_data = (accounts_res or {}).get("data") if isinstance((accounts_res or {}).get("data"), dict) else accounts_res
+		accounts_data = _unwrap_response_data(accounts_res)
 		accounts = (accounts_data or {}).get("accounts") or []
 		if not accounts:
 			continue
@@ -1032,7 +1059,7 @@ async def handle_sync_all(event: MessageEvent):
 			await asyncio.sleep(3)
 
 		status_res = await _api_get("/api/endfield/gacha/sync/status", token)
-		status_data = (status_res or {}).get("data") if isinstance((status_res or {}).get("data"), dict) else status_res
+		status_data = _unwrap_response_data(status_res)
 		if (status_data or {}).get("status") == "syncing":
 			skipped += 1
 			continue
@@ -1042,7 +1069,7 @@ async def handle_sync_all(event: MessageEvent):
 			token,
 			{"account_uid": account_uid, "server_id": str(server_id or "1")},
 		)
-		fetch_data = (fetch_res or {}).get("data") if isinstance((fetch_res or {}).get("data"), dict) else fetch_res
+		fetch_data = _unwrap_response_data(fetch_res)
 		status = (fetch_data or {}).get("status")
 		if status == "conflict":
 			skipped += 1
@@ -1088,7 +1115,7 @@ async def handle_gacha_select(event: MessageEvent, bot: Bot):
 	account_uid = account.get("uid")
 	server_id = _get_account_server_id(account)
 	target_user_id = str(pending.get("target_user_id") or user_id)
-	nickname = event.sender.card if getattr(event.sender, "card", None) else (event.sender.nickname if getattr(event.sender, "nickname", None) else user_id)
+	nickname = _get_sender_display_name(event, user_id)
 
 	await bot.send(event, "已选择账号，开始同步…")
 	text = await _start_fetch_and_poll(
