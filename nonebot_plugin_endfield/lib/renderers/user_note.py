@@ -155,6 +155,7 @@ def render_user_note_card(
         char_status_by_id[char_id] = item
 
     spaceship_room_cards: list[str] = []
+    empty_room_html = '<div class="block">暂无角色</div>'
     for room_index, room in enumerate(room_list, start=1):
         if not isinstance(room, dict):
             continue
@@ -218,7 +219,7 @@ def render_user_note_card(
             f"<h3>{escape_text(room_name)}</h3>"
             f"<p>Lv.{room_level}</p>"
             "</div>"
-            f"<div class=\"ship-room-body\">{''.join(char_blocks) or '<div class="block">暂无角色</div>'}</div>"
+            f"<div class=\"ship-room-body\">{''.join(char_blocks) or empty_room_html}</div>"
             "</article>"
         )
 
