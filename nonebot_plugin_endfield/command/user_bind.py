@@ -22,6 +22,7 @@ from ..lib.utils import TABLE_NAME, get_db_path, get_api_key, build_headers
 
 user_bind = on_command("终末地绑定", aliases={"endfield绑定", "终末地扫码绑定"})
 switch_bind = on_command("终末地切换账号", aliases={"endfield切换账号", "终末地账号切换"})
+bind_fmt = on_command("终末地fmt绑定", aliases={"endfield_fmt绑定", "终末地direct绑定"})
 
 
 def _normalize_qrcode_for_onebot_image(qrcode: Any) -> Optional[str]:
@@ -545,3 +546,74 @@ async def handle_switch_bind(event: Event, args: Message = CommandArg()):
     await switch_bind.finish(
         f"已切换当前账号为：{target['nickname']}\nroleId={target['role_id']}\nserverId={target['server_id']}"
     )
+
+@bind_fmt.handle()
+async def handle_bind_fmt(event: Event, args: Message = CommandArg()):
+    api_key = get_api_key()
+    if not api_key:
+        await bind_fmt.finish("未配置 endfield_api_key，无法进行绑定。")
+
+    framework_token = args.extract_plain_text().strip()
+    if not framework_token:
+        await bind_fmt.finish("请提供 framework_token，用法：终末地fmt绑定 <framework_token>")
+
+    common_headers = {"X-API-KEY": api_key}
+
+    binding_record_id = None
+    binding_record_data = await api_request(
+        "POST",
+        "/api/v1/bindings",
+        headers={
+            "X-API-Key": api_key,
+            "Content-Type": "application/json",
+        },
+        data={
+            "framework_token": framework_token,
+            "user_identifier": str(event.get_user_id()),
+        },
+    )
+    if isinstance(binding_record_data, dict) and binding_record_data.get("code") == 0:
+        payload = binding_record_data.get("data") if isinstance(binding_record_data.get("data"), dict) else {}
+        binding_record_id = payload.get("id")
+    else:
+        logger.warning("create binding record failed, continue with original binding flow")
+
+    binding_data = await api_request(
+        "GET",
+        "/api/endfield/binding",
+        headers={
+            "X-Framework-Token": framework_token,
+            "X-API-KEY": api_key,
+        },
+    )
+    if not isinstance(binding_data, dict) or binding_data.get("code") != 0:
+        await bind_fmt.finish("获取绑定信息失败，请检查 framework_token 是否正确。")
+
+    binding_payload = binding_data.get("data") if isinstance(binding_data.get("data"), dict) else {}
+    binding_list = binding_payload.get("bindingList") if isinstance(binding_payload.get("bindingList"), list) else []
+    if not binding_list:
+        await bind_fmt.finish("未查询到绑定角色信息。")
+
+    first_item = binding_list[0] if isinstance(binding_list[0], dict) else {}
+    default_role = first_item.get("defaultRole") if isinstance(first_item.get("defaultRole"), dict) else {}
+    if not default_role:
+        await bind_fmt.finish("未查询到默认角色信息。")
+
+    role_id = default_role.get("roleId")
+    server_id = default_role.get("serverId")
+    channelName = first_item.get("channelName")
+    nickname = str(default_role.get("nickname") or "未知角色")
+    level = default_role.get("level")
+
+    _save_binding(
+        user_id=str(event.get_user_id()),
+        framework_token=framework_token,
+        binding_id=binding_record_id,
+        role_id=role_id,
+        server_id=server_id,
+        nickname=nickname,
+        level=level,
+        expires_at=None,
+    )
+
+    await bind_fmt.finish(f"绑定成功\n角色：{nickname}\nUID：{role_id}\n服务器：{channelName}\n等级：{level}")

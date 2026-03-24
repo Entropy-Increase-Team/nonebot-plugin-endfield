@@ -97,10 +97,10 @@ def render_user_note_card(note_data: Dict[str, Any], local_role_id: str | None, 
         item = medal_by_id.get(medal_id) if medal_id else None
         achv_data = item.get("achievementData") if isinstance(item, dict) and isinstance(item.get("achievementData"), dict) else {}
         is_plated = bool(item.get("isPlated")) if isinstance(item, dict) else False
-        level = _safe_int(item.get("level")) if isinstance(item, dict) else 0
+        medal_level = _safe_int(item.get("level")) if isinstance(item, dict) else 0
         init_icon = str(achv_data.get("initIcon") or "").strip()
         plated_icon = str(achv_data.get("platedIcon") or "").strip()
-        reforge_icon = str(achv_data.get(f"reforge{level}Icon") or "").strip()
+        reforge_icon = str(achv_data.get(f"reforge{medal_level}Icon") or "").strip()
         icon_url = reforge_icon or (plated_icon if (is_plated and plated_icon) else init_icon)
         name = str(achv_data.get("name") or f"徽章{slot_index}").strip()
 
@@ -196,19 +196,21 @@ def render_user_note_card(note_data: Dict[str, Any], local_role_id: str | None, 
       </div>
     </section>
 
-    <section class=\"section\">
-      <h2 class=\"section-title\">账号概览</h2>
-      <ul class=\"section-body\">
-        <li>角色数：{char_num} | 武器数：{weapon_num} | 文档数：{doc_num} | 经验：{exp}</li>
-        <li>注册：{escape_text(create_time)}</li>
-        <li>最近登录：{escape_text(last_login)}</li>
-      </ul>
-    </section>
+    <div class="account-road-section">
+      <section class=\"section\">
+        <h2 class=\"section-title\">账号概览</h2>
+        <ul class=\"section-body\">
+          <li>角色数：{char_num} | 武器数：{weapon_num} | 文档数：{doc_num}</li>
+          <li>注册：{escape_text(create_time)}</li>
+          <li>最近登录：{escape_text(last_login)}</li>
+        </ul>
+      </section>
 
-        <section class="section">
-            <h2 class="section-title">光荣之路（已获得 {achieve_count} 枚）</h2>
-            <div class="road-flow">{road_flow or '<div class="block">暂无展示徽章</div>'}</div>
-        </section>
+      <section class="section">
+          <h2 class="section-title">光荣之路（已获得 {achieve_count} 枚蚀刻章）</h2>
+          <div class="road-flow">{road_flow or '<div class="block">暂无展示徽章</div>'}</div>
+      </section>
+    </div>
 
     <section class=\"section\">
       <h2 class=\"section-title\">角色列表（共 {len(sorted_chars)} 名）</h2>
@@ -230,6 +232,7 @@ def render_user_note_card(note_data: Dict[str, Any], local_role_id: str | None, 
         ".meter-title{font-size:16px;color:#334155;margin-bottom:4px;}"
         ".meter-track{height:13px;border-radius:999px;background:#e5e7eb;overflow:hidden;}"
         ".meter-fill{height:100%;border-radius:999px;}"
+        ".account-road-section{display:grid;grid-template-columns:1fr 1fr;gap:14px;}"
         ".char-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;}"
         ".char{min-height:180px;border-radius:10px;padding:10px 10px 12px;color:#fff;border:1px solid rgba(255,255,255,0.2);"
         "display:flex;flex-direction:column;justify-content:flex-end;box-shadow:inset 0 -40px 80px rgba(15,23,42,0.38);}"
