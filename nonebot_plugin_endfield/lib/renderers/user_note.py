@@ -218,7 +218,7 @@ def render_user_note_card(
             f"<h3>{escape_text(room_name)}</h3>"
             f"<p>Lv.{room_level}</p>"
             "</div>"
-            f"<div class=\"ship-room-body\">{''.join(char_blocks) or '<div class=\"block\">暂无角色</div>'}</div>"
+            f"<div class=\"ship-room-body\">{''.join(char_blocks) or '<div class="block">暂无角色</div>'}</div>"
             "</article>"
         )
 
