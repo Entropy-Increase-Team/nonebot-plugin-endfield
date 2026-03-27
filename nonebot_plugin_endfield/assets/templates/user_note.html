@@ -1,0 +1,815 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+	<meta charset="UTF-8" />
+	<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+	<title>User Note</title>
+	<style>
+		@font-face {
+			font-family: "HarmonySansDigits";
+			src: url("../fonts/HarmonyOS_Sans_Regular.ttf") format("truetype");
+			font-style: normal;
+			font-weight: 400;
+			unicode-range: U+0030-0039;
+		}
+
+		@font-face {
+			font-family: "HarmonySansDigits";
+			src: url("../fonts/HarmonyOS_Sans_Medium.ttf") format("truetype");
+			font-style: normal;
+			font-weight: 700;
+			unicode-range: U+0030-0039;
+		}
+
+		html,
+		body {
+			width: 100%;
+			height: 100%;
+			margin: 0;
+			padding: 0;
+		}
+
+		body {
+			position: relative;
+			background-color: #0b1220;
+			overflow: hidden;
+			font-family: "HarmonySansDigits", "HarmonyOS Sans SC", "Microsoft YaHei", sans-serif;
+		}
+
+		body::before {
+			content: "";
+			position: fixed;
+			inset: 0;
+			background-image: url("../img/background.webp"), url("../background.webp");
+			background-position: center;
+			background-repeat: no-repeat;
+			background-size: cover;
+			filter: blur(50px);
+			transform: scale(1.08);
+			pointer-events: none;
+			z-index: 0;
+		}
+
+		body::after {
+			content: "";
+			position: fixed;
+			inset: 0;
+			background-image: linear-gradient(180deg, rgba(6, 10, 20, 0.15), rgba(6, 10, 20, 0.45)), url("../img/background.webp"), url("../background.webp");
+			background-position: center;
+			background-repeat: no-repeat;
+			background-size: 80%;
+			mask-image: radial-gradient(radial-gradient(circle at center, transparent 10%, #000 75%));
+			pointer-events: none;
+			z-index: 1;
+		}
+
+		.container {
+			position: relative;
+			z-index: 2;
+			width: 100%;
+			height: 100%;
+			box-sizing: border-box;
+		}
+
+		.container::before {
+			content: "";
+			position: absolute;
+			inset: 0;
+			pointer-events: none;
+			backdrop-filter: blur(10px);
+			-webkit-backdrop-filter: blur(10px);
+			-webkit-mask-image: radial-gradient(circle at center, transparent 10%, #000 75%);
+			mask-image: radial-gradient(radial-gradient(circle at center, transparent 10%, #000 75%));
+			box-shadow: inset 0 0 80px rgba(0, 0, 0, 0.32);
+		}
+
+		.top-left-accent {
+			position: absolute;
+			left: 0;
+			top: 0;
+			width: 30%;
+			height: 7px;
+			background: #facc15;
+			z-index: 1;
+		}
+
+		.section-marker {
+			position: absolute;
+			left: -50px;
+			top: 5px;
+			width: 20px;
+			height: 10px;
+			background: #facc15;
+		}
+
+		.profile-area {
+			position: absolute;
+			left: 12%;
+			top: 17%;
+			display: grid;
+			grid-template-columns: 160px 1fr;
+			column-gap: 18px;
+			align-items: start;
+			width: 500px;
+		}
+
+		.avatar-placeholder {
+			width: 160px;
+			height: 160px;
+			background: #ffffff;
+			border-radius: 0;
+			box-shadow: 0 6px 18px rgba(0, 0, 0, 0.2);
+		}
+
+		.profile-meta {
+			height: 160px;
+			display: flex;
+			flex-direction: column;
+			justify-content: space-between;
+		}
+
+		.profile-name {
+			margin: 10px 0 0;
+			font-size: 34px;
+			line-height: 1;
+			color: #ffffff;
+			font-weight: 700;
+			text-shadow: 0 2px 8px rgba(0, 0, 0, 0.32);
+		}
+
+        .profile-zhuangshi {
+			margin: 0px 0 35px;
+			font-size: 14px;
+			line-height: 1;
+			color: #6b6b6b;
+			font-weight: 800;
+		}
+
+		.profile-bottom {
+			display: flex;
+			flex-direction: column;
+			align-items: flex-start;
+			gap: 8px;
+		}
+
+		.date-row {
+			display: flex;
+			align-items: center;
+			gap: 0;
+		}
+
+		.departure-tag {
+			display: inline-flex;
+			align-items: center;
+			gap: 6px;
+			height: 17px;
+			padding: 0 10px 0 8px;
+			background: #111111;
+			color: #ffffff;
+			font-size: 14px;
+			line-height: 1.2;
+			font-weight: 700;
+		}
+
+		.departure-tag .triangles {
+			display: inline-flex;
+			align-items: center;
+			gap: 2px;
+		}
+
+		.departure-tag .triangles i {
+			display: inline-block;
+			width: 0;
+			height: 0;
+			border-top: 5px solid transparent;
+			border-bottom: 5px solid transparent;
+			border-left: 7px solid #facc15;
+		}
+
+		.profile-date {
+			margin: 0;
+			height: 17px;
+			display: inline-flex;
+			align-items: center;
+			padding: 0 10px;
+			background: #ffffff;
+			font-size: 16px;
+			line-height: 1.2;
+			color: #111827;
+		}
+
+		.profile-uid {
+			margin: 0 10px 10px 0;
+			font-size: 15px;
+			line-height: 1;
+			color: #cecece;
+			font-weight: 700;
+			text-shadow: 0 2px 8px rgba(0, 0, 0, 0.32);
+		}
+
+		.account-info-area {
+			position: absolute;
+			left: 12%;
+			top: calc(20% + 180px);
+			width: 500px;
+			height: 180px;
+			display: flex;
+			flex-direction: column;
+			justify-content: flex-start;
+			gap: 10px;
+		}
+
+		.account-text-row {
+			width: 60%;
+			background: rgba(11, 11, 11, 0.911);
+			color: #ffffff;
+			display: flex;
+			align-items: center;
+			gap: 8px;
+			padding: 1px 5px;
+			font-size: 20px;
+			line-height: 0;
+			font-weight: 400;
+		}
+
+		.account-text-row img {
+			width: 24px;
+			height: 24px;
+			object-fit: contain;
+			flex: 0 0 auto;
+		}
+
+		.chapter-progress-card {
+			position: relative;
+            top: 10px;
+			width: 90%;
+			height: 50%;
+			background: rgba(22, 22, 22, 0.911);
+			color: #111827;
+			display: flex;
+			align-items: center;
+            border-radius: 0px 10px 10px 0px;
+			gap: 10px;
+			padding: 0 14px;
+			font-size: 18px;
+			font-weight: 700;
+			box-sizing: border-box;
+		}
+
+		.chapter-progress-card img {
+			width: 60px;
+			height: 60px;
+			object-fit: contain;
+			flex: 0 0 auto;
+			transform: translateY(4px);
+		}
+
+		.chapter-text {
+			display: flex;
+			flex-direction: column;
+			justify-content: center;
+			gap: 4px;
+		}
+
+		.chapter-title {
+			font-size: 20px;
+			line-height: 1;
+			font-weight: 350;
+            color: rgba(255, 255, 255, 0.8);
+		}
+
+		.chapter-value {
+			font-size: 15px;
+			line-height: 1;
+			color: rgba(141, 141, 141, 0.8);
+			font-weight: 400;
+		}
+
+		.extra-blocks-area {
+			position: absolute;
+			left: 12%;
+			top: calc(20% + 180px + 180px + 20px);
+			width: 500px;
+			display: flex;
+			flex-direction: row;
+			gap: 10px;
+		}
+
+		.extra-gray-block {
+			width: calc((90% - 20px) / 3);
+			height: 90px;
+			background: rgba(22, 22, 22, 0.911);
+			display: flex;
+			align-items: flex-start;
+			padding: 7px 12px;
+			box-sizing: border-box;
+		}
+
+		.extra-card-metric {
+			display: flex;
+			flex-direction: column;
+			align-items: flex-start;
+			gap: 7px;
+		}
+
+		.extra-card-number {
+			font-size: 37px;
+			line-height: 1;
+			color: #facc15;
+			font-weight: 450;
+		}
+
+		.extra-card-label {
+			font-size: 20px;
+			line-height: 1;
+			color: #facc15;
+			font-weight: 300;
+		}
+
+		.region-overview-area {
+			position: absolute;
+			left: 12%;
+			top: calc(20% + 180px + 180px + 20px + 90px + 20px);
+			width: 500px;
+			height: 120px;
+			display: flex;
+			flex-direction: column;
+			align-items: flex-start;
+			padding-top: 5px;
+			box-sizing: border-box;
+		}
+
+		.region-overview-header {
+			display: inline-flex;
+			flex-direction: column;
+			align-items: flex-start;
+			width: fit-content;
+		}
+
+		.region-overview-bar {
+			width: 100%;
+			height: 10px;
+			background: #facc15;
+		}
+
+		.region-overview-title {
+			margin: 2px 0 0;
+			font-size: 23px;
+			line-height: 1;
+			font-weight: 400;
+			color: #facc15;
+		}
+
+		.region-overview-boxes {
+			margin-top: 20px;
+			width: 80%;
+			display: flex;
+			gap: 10px;
+		}
+
+		.region-overview-box {
+			position: relative;
+			width: calc((100% - 10px) / 2);
+			height: 60px;
+			padding: 5px 8px;
+			box-sizing: border-box;
+			overflow: hidden;
+		}
+
+		.region-overview-content {
+			position: relative;
+			z-index: 1;
+			width: 100%;
+			display: flex;
+			justify-content: space-between;
+			align-items: flex-start;
+		}
+
+		.region-overview-code {
+			font-size: 7px;
+			line-height: 1.1;
+			font-weight: 500;
+			letter-spacing: 0.2px;
+			color: rgba(40, 40, 40, 0.55);
+		}
+
+		.region-overview-meta {
+			display: flex;
+			flex-direction: column;
+			align-items: flex-end;
+			gap: 2px;
+		}
+
+		.region-overview-level-row {
+			display: flex;
+			align-items: flex-start;
+			gap: 4px;
+		}
+
+		.region-overview-level-label {
+			font-size: 14px;
+			line-height: 1;
+			font-weight: 400;
+			color: rgba(55, 55, 55, 0.7);
+		}
+
+		.region-overview-level-number {
+			display: inline-block;
+			width: 2ch;
+			text-align: right;
+			font-variant-numeric: tabular-nums;
+			font-size: 36px;
+			line-height: 0.8;
+			font-weight: 600;
+			color: rgba(35, 35, 35, 0.9);
+		}
+
+		.region-overview-place {
+			font-size: 20px;
+			line-height: 1;
+			font-weight: 400;
+			color: rgba(45, 45, 45, 0.80);
+		}
+
+		.region-overview-box:first-child {
+			background: linear-gradient(90deg, rgb(218, 219, 183), rgb(212, 211, 212));
+		}
+
+		.region-overview-box:last-child {
+			background: linear-gradient(90deg, rgb(169, 201, 201), rgb(212, 211, 212));
+		}
+
+		.region-overview-box::after {
+			content: "";
+			position: absolute;
+			inset: 0;
+			z-index: 0;
+			background-image: radial-gradient(circle, rgba(120, 120, 120, 0.15) 1px, transparent 1px);
+			background-size: 10px 10px;
+			pointer-events: none;
+		}
+
+		.right-gallery-area {
+			position: absolute;
+			right: 12%;
+			top: 17%;
+			width: 575px;
+			display: flex;
+			flex-direction: column;
+		}
+
+		.gallery-item {
+			width: 100%;
+			padding: 0;
+			box-sizing: border-box;
+		}
+
+		.gallery-item.operator-gallery {
+			position: relative;
+		}
+
+		.gallery-item.road-gallery {
+			position: relative;
+		}
+
+		.gallery-item + .gallery-item {
+			margin-top: 10px;
+		}
+
+		.gallery-image {
+			display: block;
+			width: 100%;
+			height: auto;
+			object-fit: contain;
+		}
+
+		.operator-overlay-row {
+			position: absolute;
+			top: 35%;
+			left: 60%;
+			transform: translateX(-50%);
+			display: flex;
+			gap: 10px;
+			z-index: 3;
+			pointer-events: none;
+		}
+
+		.operator-overlay-box {
+			position: relative;
+			--accent-color: #ff7000;
+			width: 95px;
+			height: 140px;
+			background: #ffffff;
+			overflow: hidden;
+		}
+
+		.operator-overlay-image {
+			display: block;
+			width: 100%;
+			height: 100%;
+			object-fit: cover;
+			position: relative;
+			z-index: 1;
+		}
+
+		.operator-overlay-topicon {
+			position: absolute;
+			left: 4px;
+			top: 4px;
+			width: 26px;
+			height: 26px;
+			border-radius: 3px;
+			background-image: var(--profession-icon, url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAAPFBMVEVERETu7u6urq7Z2dlPT09ZWVmPj49vb2/j4+PDw8OEhISZmZlkZGRaWlrOzs55eXmjo6OkpKTY2Ni5ubmVHjk7AAACWUlEQVRo3u2ZwZqcIBCEu2hQRHHG7Pu/a3bYGSDBqBm6L/vtf9ND8VV1NR6kH/4bS8q4kZT5IGWMtoWBlcfgMJMu3itbMDCkygDoztkBE6nigUCaGODynOObQ7ha1cW9OQT4SBeIw7tDuDbnOL0/hEtVXcPbm3DJwvbRsQmfnOU7w/VswmlVbzBdm3BW1ejZ9VxHiXigzwh919HJnFdw73V0WNUNuHVeRwn+Z4Fgur8JB1W9Aami/UPYr2pcTbDUCeOLO7U4mW/Ck4V0CECu6jIonOLwYnyUhs3NkiyMJ2yJtuRF1ojBizk/iRoJQFVVuyIhaMQhYx6PjISgkUpxLCcIGjGVGH2yeCTEjAQUQvVCzIhDgW11A4oZ4Uoj39IJISMGGdO8kjAS6hol8jrIGHFVQi8sIyFjhP9OqFmHa0bsONwnj8xq68TrhNp1ODfSHlNOCDmhmsVcJSSdvWOeJ7ickDSL+2MII2lh6oRaq07om2BabfML8IvUN2FstIF+/TIErrUz7EiC7ZWQWZEQ1qfwTGiAjj7Zr4QiC+sXOCVk1PRpeyQU9fQpMBFNevpkDVFQ0C/EtAzNXS7JrKwfva4+GWX9iILJ+qPcSVzpV7YGEiLs6tM6kQyWd/UjYKUreqeKEZhFJ9zoTWDRihb9YmGkfsZWv1i4i1V0N28n8ZMhFP2WuT+jyAf6ZH33KmxFf9+fFajoUd+nQaKi4aBjk8CEg94fPT7VJ9uT0dDqtwx9FfWnCVjXM2G/KP57jklfkUlZP4AX0oTZkSazsn5cHakyO9LF0Q/fjN88ZBA5COzFsQAAAABJRU5ErkJggg=="));
+			background-size: contain;
+			background-repeat: no-repeat;
+			background-position: center;
+			z-index: 4;
+		}
+
+		.operator-overlay-meta {
+			position: absolute;
+			right: 4px;
+			bottom: 12px;
+			display: flex;
+			align-items: flex-end;
+			justify-content: flex-end;
+			gap: -1px;
+			z-index: 6;
+			color: #111827;
+			font-weight: 500;
+			line-height: 0.8;
+		}
+
+		.operator-level-label {
+			font-size: 9px;
+		}
+
+		.operator-level-value {
+			font-size: 20px;
+		}
+
+		.operator-overlay-mask {
+			position: absolute;
+			right: 2px;
+			bottom: 15px;
+			width: 40px;
+			height: 15px;
+			background: rgba(255, 255, 255, 0.95);
+			border-radius: 5px;
+			z-index: 5;
+		}
+
+		.operator-overlay-box::after {
+			content: "";
+			position: absolute;
+			left: 0;
+			right: 0;
+			bottom: 0;
+			height: 20px;
+			background: linear-gradient(to top, var(--accent-color) 0 7px, #ffffff 7px 27px);
+			z-index: 3;
+		}
+
+		.operator-overlay-box::before {
+			content: "";
+			position: absolute;
+			left: 4px;
+			bottom: 10px;
+			width: 17px;
+			height: 17px;
+			border-radius: 2px;
+			background-image: var(--property-icon, url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAAM1BMVEWIiIj////ExMTS0tLw8PCXl5e1tbWPj4/h4eHp6en39/e8vLyenp60tLTa2trLy8uqqqo1QC6AAAABP0lEQVRo3u3Yza6CMBgG4fYrUBBR7/9qz3IScwIonYVJ35WreQx/CaS+vr6+vsON8b5X2/6Q31eEvgDQVwD6DkDfAeg7AH0HoK8Clb4C1CU7AH0HoO8A9F2gZAeg7wD0HYC+Czzz4Z4nUy9+sjjuL/UkUOKr/lDPH+z4pj9+cjbD6QPkcPoAOZw+QA6hD4DQtA+AsDbvA+Q1pU3oA+TpRP82XnqqHffvyQHoOwB9F6DvAFNyAPoOQN8B6LtAJAeg7wD0L2yy+ghWH0Hqs1Xqs5D7CIy+KpSUVOFWkywsLYR13BHmFv982BPK9X6WBJoIpZ1A3xR4RiA0vds2Goqw/ftWN7cQSLHH7ieQuAxwz9aJsXoBoN94s9kHoC8BXKIC4PQBpD6A1AeQ+gBSH0DqA0h9APrOHvfkrqa+vr5f2x9iXQzReL8DmAAAAABJRU5ErkJggg=="));
+			background-size: contain;
+			background-repeat: no-repeat;
+			background-position: center;
+			z-index: 4;
+		}
+
+		.operator-overlay-box:nth-child(2)::after {
+			--accent-color: #efae03;
+		}
+
+		.operator-overlay-box:nth-child(3)::after,
+		.operator-overlay-box:nth-child(4)::after {
+			--accent-color: #9452fa;
+		}
+
+		.road-base-image {
+			display: block;
+			width: 100%;
+			height: auto;
+			object-fit: contain;
+		}
+
+		.road-flow {
+			display: grid;
+			grid-template-columns: repeat(10, 52px);
+			width: 520px;
+			min-height: 252px;
+			row-gap: 0;
+			column-gap: 0;
+			overflow: visible;
+			position: absolute;
+			left: 53%;
+			top: 55%;
+			transform: translate(-50%, -50%) scale(0.67);
+			transform-origin: center center;
+			pointer-events: none;
+		}
+
+		.road-item {
+			width: 126px;
+			height: 126px;
+			position: relative;
+			grid-column: span 2;
+		}
+
+		.road-item:nth-child(even) {
+			margin-top: -65px;
+		}
+
+		.road-item:nth-child(1) {
+			grid-row: 1;
+			grid-column: 1 / span 2;
+		}
+
+		.road-item:nth-child(2) {
+			grid-row: 2;
+			grid-column: 2 / span 2;
+		}
+
+		.road-item:nth-child(3) {
+			grid-row: 1;
+			grid-column: 3 / span 2;
+		}
+
+		.road-item:nth-child(4) {
+			grid-row: 2;
+			grid-column: 4 / span 2;
+		}
+
+		.road-item:nth-child(5) {
+			grid-row: 1;
+			grid-column: 5 / span 2;
+		}
+
+		.road-item:nth-child(6) {
+			grid-row: 2;
+			grid-column: 6 / span 2;
+		}
+
+		.road-item:nth-child(7) {
+			grid-row: 1;
+			grid-column: 7 / span 2;
+		}
+
+		.road-item:nth-child(8) {
+			grid-row: 2;
+			grid-column: 8 / span 2;
+		}
+
+		.road-item:nth-child(9) {
+			grid-row: 1;
+			grid-column: 9 / span 2;
+		}
+
+		.road-item:nth-child(10) {
+			grid-row: 2;
+			grid-column: 10 / span 2;
+		}
+
+		.road-icon {
+			width: 126px;
+			height: 126px;
+			display: flex;
+			align-items: center;
+			justify-content: center;
+			overflow: hidden;
+			clip-path: polygon(50% 0%, 93.3% 25%, 93.3% 75%, 50% 100%, 6.7% 75%, 6.7% 25%);
+			box-shadow: 0 8px 18px rgba(15, 23, 42, 0.16);
+		}
+
+		.road-icon img {
+			width: 100%;
+			height: 100%;
+			object-fit: cover;
+			display: block;
+		}
+	</style>
+</head>
+<body>
+	<div class="container">
+		<section class="profile-area">
+			<div class="section-marker"></div>
+			<div class="avatar-placeholder"></div>
+			<div class="profile-meta">
+				<h1 class="profile-name">名称</h1>
+                <p class="profile-zhuangshi">[x ---] </p>
+				<div class="profile-bottom">
+					<div class="date-row">
+						<div class="departure-tag">
+							<span class="triangles"><i></i><i></i></span>
+							<span>苏醒日</span>
+						</div>
+						<p class="profile-date">2026-03-27</p>
+					</div>
+					<p class="profile-uid">123456789</p>
+				</div>
+			</div>
+		</section>
+		<section class="account-info-area">
+			<div class="section-marker"></div>
+			<div class="account-text-row"><img src="../img/权限等阶.png" alt="权限等阶图标" onerror="this.onerror=null;this.src='../权限等阶.png';" />权限等阶</div>
+			<div class="account-text-row"><img src="../img/探索等级.png" alt="探索等级图标" onerror="this.onerror=null;this.src='../探索等级.png';" />探索等级</div>
+			<div class="chapter-progress-card" id="chapter-progress-card">
+				<div class="top-left-accent"></div>
+				<img src="../img/主线图标.png" alt="主线图标" onerror="this.onerror=null;this.src='../主线图标.png';" />
+				<div class="chapter-text">
+					<span class="chapter-title">章节进度</span>
+					<span class="chapter-value" id="chapter-progress-value">第二章 —— XXXX</span>
+				</div>
+			</div>
+		</section>
+		<section class="extra-blocks-area">
+			<div class="section-marker"></div>
+			<div class="extra-gray-block">
+				<div class="extra-card-metric">
+					<span class="extra-card-number">00</span>
+					<span class="extra-card-label">干员</span>
+				</div>
+			</div>
+			<div class="extra-gray-block">
+				<div class="extra-card-metric">
+					<span class="extra-card-number">00</span>
+					<span class="extra-card-label">武器</span>
+				</div>
+			</div>
+			<div class="extra-gray-block">
+				<div class="extra-card-metric">
+					<span class="extra-card-number">00</span>
+					<span class="extra-card-label">档案</span>
+				</div>
+			</div>
+		</section>
+		<section class="region-overview-area">
+			<div class="section-marker"></div>
+			<div class="region-overview-header">
+				<div class="region-overview-bar"></div>
+				<h2 class="region-overview-title">地区建设概况</h2>
+			</div>
+			<div class="region-overview-boxes">
+				<div class="region-overview-box">
+					<div class="region-overview-content">
+						<div class="region-overview-code">00101.1010<br />00110.1010</div>
+						<div class="region-overview-meta">
+							<div class="region-overview-level-row">
+								<span class="region-overview-level-label">等级</span>
+								<span class="region-overview-level-number">12</span>
+							</div>
+							<div class="region-overview-place">四号谷地</div>
+						</div>
+					</div>
+				</div>
+				<div class="region-overview-box">
+					<div class="region-overview-content">
+						<div class="region-overview-code">01011.1001<br />00100.1110</div>
+						<div class="region-overview-meta">
+							<div class="region-overview-level-row">
+								<span class="region-overview-level-label">等级</span>
+								<span class="region-overview-level-number">8</span>
+							</div>
+							<div class="region-overview-place">武陵</div>
+						</div>
+					</div>
+				</div>
+			</div>
+		</section>
+		<section class="right-gallery-area">
+			<div class="gallery-item road-gallery">
+				<img class="road-base-image" src="../img/光荣之路.png" alt="光荣之路" onerror="this.onerror=null;this.src='../光荣之路.png';" />
+				<div class="road-flow">
+					<article class="road-item"><div class="road-icon"><img src="https://bbs.hycdn.cn/image/2026/03/10/25b253bc7f352eacc7d08fce197198d2.png" alt="徽章1" /></div></article>
+					<article class="road-item"><div class="road-icon"><img src="https://bbs.hycdn.cn/image/2026/03/10/25b253bc7f352eacc7d08fce197198d2.png" alt="徽章2" /></div></article>
+					<article class="road-item"><div class="road-icon"><img src="https://bbs.hycdn.cn/image/2026/03/10/25b253bc7f352eacc7d08fce197198d2.png" alt="徽章3" /></div></article>
+					<article class="road-item"><div class="road-icon"><img src="https://bbs.hycdn.cn/image/2026/03/10/25b253bc7f352eacc7d08fce197198d2.png" alt="徽章4" /></div></article>
+					<article class="road-item"><div class="road-icon"><img src="https://bbs.hycdn.cn/image/2026/03/10/25b253bc7f352eacc7d08fce197198d2.png" alt="徽章5" /></div></article>
+					<article class="road-item"><div class="road-icon"><img src="https://bbs.hycdn.cn/image/2026/03/10/25b253bc7f352eacc7d08fce197198d2.png" alt="徽章6" /></div></article>
+					<article class="road-item"><div class="road-icon"><img src="https://bbs.hycdn.cn/image/2026/03/10/25b253bc7f352eacc7d08fce197198d2.png" alt="徽章7" /></div></article>
+					<article class="road-item"><div class="road-icon"><img src="https://bbs.hycdn.cn/image/2026/03/10/25b253bc7f352eacc7d08fce197198d2.png" alt="徽章8" /></div></article>
+					<article class="road-item"><div class="road-icon"><img src="https://bbs.hycdn.cn/image/2026/03/10/25b253bc7f352eacc7d08fce197198d2.png" alt="徽章9" /></div></article>
+					<article class="road-item"><div class="road-icon"><img src="https://bbs.hycdn.cn/image/2026/03/10/25b253bc7f352eacc7d08fce197198d2.png" alt="徽章10" /></div></article>
+				</div>
+			</div>
+			<div class="gallery-item operator-gallery">
+				<div class="operator-overlay-row">
+					<div class="operator-overlay-box"><span class="operator-overlay-topicon"></span><img class="operator-overlay-image" src="https://bbs.hycdn.cn/image/2025/11/19/4865706e2981357ca7b07bad22dd91b1.png" alt="干员图1" /><div class="operator-overlay-meta"><span class="operator-level-label">Lv.</span><span class="operator-level-value">90</span></div><div class="operator-overlay-mask"></div></div>
+					<div class="operator-overlay-box"><span class="operator-overlay-topicon"></span><img class="operator-overlay-image" src="https://bbs.hycdn.cn/image/2025/11/19/4865706e2981357ca7b07bad22dd91b1.png" alt="干员图2" /><div class="operator-overlay-meta"><span class="operator-level-label">Lv.</span><span class="operator-level-value">90</span></div><div class="operator-overlay-mask"></div></div>
+					<div class="operator-overlay-box"><span class="operator-overlay-topicon"></span><img class="operator-overlay-image" src="https://bbs.hycdn.cn/image/2025/11/19/4865706e2981357ca7b07bad22dd91b1.png" alt="干员图3" /><div class="operator-overlay-meta"><span class="operator-level-label">Lv.</span><span class="operator-level-value">90</span></div><div class="operator-overlay-mask"></div></div>
+					<div class="operator-overlay-box"><span class="operator-overlay-topicon"></span><img class="operator-overlay-image" src="https://bbs.hycdn.cn/image/2025/11/19/4865706e2981357ca7b07bad22dd91b1.png" alt="干员图4" /><div class="operator-overlay-meta"><span class="operator-level-label">Lv.</span><span class="operator-level-value">90</span></div><div class="operator-overlay-mask"></div></div>
+				</div>
+				<img class="gallery-image" src="../img/干员展示.png" alt="干员展示" onerror="this.onerror=null;this.src='../干员展示.png';" />
+			</div>
+		</section>
+	</div>
+</body>
+</html>

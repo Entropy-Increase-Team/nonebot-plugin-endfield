@@ -2,6 +2,8 @@ import os
 import subprocess
 import sys
 import threading
+from pathlib import Path
+import tempfile
 
 from nonebot import logger
 from playwright.sync_api import sync_playwright
@@ -10,6 +12,18 @@ from playwright.sync_api import sync_playwright
 _PLAYWRIGHT_BROWSER_READY = False
 _PLAYWRIGHT_INIT_LOCK = threading.Lock()
 _PLAYWRIGHT_CN_MIRROR_DEFAULT = "https://registry.npmmirror.com/-/binary/playwright"
+
+
+def _get_render_tmp_dir() -> Path:
+  try:
+    import nonebot_plugin_localstore as store
+
+    base = Path(store.get_plugin_data_dir())
+  except Exception:
+    base = Path(tempfile.gettempdir()) / "nonebot_plugin_endfield"
+  target = base / "render_tmp"
+  target.mkdir(parents=True, exist_ok=True)
+  return target
 
 
 def _is_missing_browser_error(exc: Exception) -> bool:
@@ -240,10 +254,63 @@ body {
 """
 
 
-def render_html_to_image(image_body_html: str, *, width: int = 1200, extra_styles: str = "") -> bytes:
+def render_page_html_to_image(
+    page_html: str,
+    *,
+    width: int = 1200,
+    height: int = 800,
+    full_page: bool = True,
+    base_dir: Path | None = None,
+) -> bytes:
     if not ensure_playwright_browser_installed():
         raise RuntimeError("Playwright Chromium 不可用，请检查网络后重试，或手动执行: playwright install chromium")
 
+    temp_html_path: Path | None = None
+    if base_dir is not None:
+        try:
+            base_href = base_dir.resolve().as_uri()
+            if not base_href.endswith("/"):
+                base_href += "/"
+            if "<head>" in page_html and "<base " not in page_html:
+                page_html = page_html.replace("<head>", f"<head><base href=\"{base_href}\" />", 1)
+
+            tmp_dir = _get_render_tmp_dir()
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                suffix=".html",
+                prefix="_render_",
+                dir=str(tmp_dir),
+                delete=False,
+                encoding="utf-8",
+            ) as f:
+                f.write(page_html)
+                temp_html_path = Path(f.name)
+        except Exception as e:
+            logger.warning(f"[终末地插件][渲染]创建 localstore 临时 HTML 失败，将回退 set_content: {e}")
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch()
+        page = browser.new_page(viewport={"width": width, "height": height})
+        try:
+            if temp_html_path is not None:
+                page.goto(temp_html_path.resolve().as_uri(), wait_until="networkidle", timeout=15000)
+            else:
+                page.set_content(page_html, wait_until="networkidle", timeout=15000)
+            page.wait_for_timeout(350)
+        except Exception as e:
+            logger.warning(f"[终末地插件][渲染]页面内容加载异常，继续截图: {e}")
+
+        screenshot = page.screenshot(full_page=full_page, type="png")
+        browser.close()
+        if temp_html_path is not None:
+            try:
+                temp_html_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+        return screenshot
+
+
+def render_html_to_image(image_body_html: str, *, width: int = 1200, extra_styles: str = "") -> bytes:
     style = _BASE_STYLE.replace("WIDTH_PLACEHOLDER", str(width)) + (extra_styles or "")
     page_html = f"""
 <!doctype html>
@@ -258,16 +325,4 @@ def render_html_to_image(image_body_html: str, *, width: int = 1200, extra_style
 </body>
 </html>
 """
-
-    with sync_playwright() as p:
-        browser = p.chromium.launch()
-        page = browser.new_page(viewport={"width": width, "height": 800})
-        try:
-            page.set_content(page_html, wait_until="networkidle", timeout=15000)
-            page.wait_for_timeout(350)
-        except Exception as e:
-            logger.warning(f"[终末地插件][渲染]页面内容加载异常，继续截图: {e}")
-
-        screenshot = page.screenshot(full_page=True, type="png")
-        browser.close()
-        return screenshot
+    return render_page_html_to_image(page_html, width=width)
