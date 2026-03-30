@@ -10,65 +10,288 @@ import httpx
 from nonebot import get_plugin_config, logger
 
 from .helpers import escape_text
-from .report import render_report_image
 from .runtime import render_html_to_image
 from ...config import Config
 from ..utils import get_api_key, get_data_dir
 
-
 PLUGIN_CONFIG = get_plugin_config(Config)
 
+# --- 终末地视觉规范定义 - 亮色战术风格 (Light Tactical HUD) ---
+ENDFIELD_THEME_CSS = """
+:root {
+    /* 背景改为冷灰白，面板改为纯白与浅灰，营造科幻实验室的无菌感 */
+    --ef-bg: #f0f2f5;
+    --ef-panel: #ffffff;
+    --ef-panel-light: #e4e7ec;
+    
+    /* 强调色进行加深，以保证在浅色背景下的高对比度与辨识度 */
+    --ef-yellow: #e09600;
+    --ef-blue: #0060d1;
+    --ef-red: #d92135;
+    --ef-green: #00994d;
+    
+    /* 边框体系翻转为深灰 */
+    --ef-border: #cbd0d8;
+    --ef-border-hl: #9aa4b3;
+    
+    /* 字体颜色翻转为极夜黑与冷灰 */
+    --ef-text-main: #181a1d;
+    --ef-text-sub: #6c7381;
+}
 
+@font-face {
+    font-family: 'HarmonyOS Sans SC';
+    src: url('file:///FONT_PATH_PLACEHOLDER') format('opentype');
+    font-weight: bold;
+    font-style: normal;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+    background-color: var(--ef-bg);
+    /* 背景网点与阵列改为暗色调半透明 */
+    background-image: 
+        radial-gradient(rgba(0,0,0,0.06) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(0,0,0,0.03) 1px, transparent 1px),
+        linear-gradient(rgba(0,0,0,0.03) 1px, transparent 1px);
+    background-size: 20px 20px, 100px 100px, 100px 100px;
+    color: var(--ef-text-main);
+    font-family: 'Consolas', 'HarmonyOS Sans SC', monospace;
+}
+
+.clip-corner {
+    clip-path: polygon(12px 0, 100% 0, 100% calc(100% - 12px), calc(100% - 12px) 100%, 0 100%, 0 12px);
+}
+.clip-corner-sm {
+    clip-path: polygon(6px 0, 100% 0, 100% calc(100% - 6px), calc(100% - 6px) 100%, 0 100%, 0 6px);
+}
+
+.tactical-scanline {
+    background: repeating-linear-gradient(
+        0deg,
+        transparent,
+        transparent 2px,
+        rgba(0,0,0,0.02) 2px,
+        rgba(0,0,0,0.02) 4px
+    );
+}
+
+.corner-bracket { position: relative; }
+.corner-bracket::before, .corner-bracket::after {
+    content: ''; position: absolute; width: 10px; height: 10px;
+    border: 2px solid var(--ef-blue);
+    z-index: 10;
+}
+.corner-bracket::before { top: -2px; left: -2px; border-right: none; border-bottom: none; }
+.corner-bracket::after { bottom: -2px; right: -2px; border-left: none; border-top: none; }
+
+.ef-panel {
+    background-color: var(--ef-panel);
+    border: 1px solid var(--ef-border);
+    position: relative;
+    /* 亮色模式下添加细微投影增加层级感 */
+    box-shadow: 0 4px 12px rgba(0,0,0,0.03); 
+}
+.ef-header-title {
+    font-size: 1.8em; font-weight: bold; letter-spacing: 2px;
+    border-left: 4px solid var(--ef-yellow);
+    padding-left: 12px; margin-bottom: 6px;
+    text-transform: uppercase;
+}
+"""
+
+# --- 基础工具函数 ---
+def _to_int(v: Any) -> int:
+    try: return int(v or 0)
+    except Exception: return 0
+
+def _to_bool(v: Any) -> bool:
+    if isinstance(v, bool): return v
+    if isinstance(v, str): return v.lower() in ("1", "true", "yes")
+    return bool(v)
+
+def _cache_remote_icon(icon_url: str) -> str:
+    def _file_to_data_uri(path: Path) -> str:
+        try:
+            suffix = path.suffix.lower()
+            mime = {
+                ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+                ".webp": "image/webp", ".gif": "image/gif", ".svg": "image/svg+xml",
+            }.get(suffix, "application/octet-stream")
+            payload = base64.b64encode(path.read_bytes()).decode("ascii")
+            return f"data:{mime};base64,{payload}"
+        except Exception: return ""
+
+    def _escape_http_url_path(url: str) -> str:
+        try:
+            parts = urlsplit(url)
+            if parts.scheme not in ("http", "https"): return url
+            escaped_path = quote(parts.path or "", safe="/%:@!$&'()*+,;=-._~")
+            return urlunsplit((parts.scheme, parts.netloc, escaped_path, parts.query, parts.fragment))
+        except Exception: return url
+
+    raw_url = str(icon_url or "").strip()
+    if not raw_url: return ""
+    if raw_url.startswith("//"): raw_url = "https:" + raw_url
+    if not raw_url.startswith(("http://", "https://", "file:///", "data:")):
+        base_url = str(getattr(PLUGIN_CONFIG, "endfield_api_baseurl", "") or "").strip()
+        if base_url: raw_url = f"{base_url.rstrip('/')}/{raw_url.lstrip('/')}"
+    if raw_url.startswith("file:///"):
+        try:
+            local_path = Path(raw_url.replace("file:///", "", 1))
+            if local_path.exists() and local_path.is_file():
+                data_uri = _file_to_data_uri(local_path)
+                if data_uri: return data_uri
+        except Exception: pass
+        return raw_url
+    if not (raw_url.startswith("http://") or raw_url.startswith("https://")):
+        return raw_url
+
+    raw_url = _escape_http_url_path(raw_url)
+    cache_dir = get_data_dir() / "gacha_icon_cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    suffix = Path(raw_url.split("?", 1)[0]).suffix.lower()
+    if suffix not in {".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg"}: suffix = ".png"
+    cache_file = cache_dir / f"{hashlib.md5(raw_url.encode('utf-8')).hexdigest()}{suffix}"
+    
+    if cache_file.exists() and cache_file.stat().st_size > 0:
+        data_uri = _file_to_data_uri(cache_file)
+        if data_uri: return data_uri
+        return cache_file.resolve().as_uri()
+
+    try:
+        headers: Dict[str, str] = {}
+        api_key = str(get_api_key() or "").strip()
+        if api_key: headers["x-api-key"] = api_key
+        response = httpx.get(raw_url, timeout=10.0, follow_redirects=True, headers=headers or None)
+        response.raise_for_status()
+        if suffix == ".png":
+            content_type = (response.headers.get("content-type") or "").split(";", 1)[0].strip().lower()
+            guessed_ext = mimetypes.guess_extension(content_type) or ""
+            if guessed_ext in {".jpg", ".jpeg", ".png", ".webp", ".gif", ".svg"}:
+                cache_file = cache_dir / f"{hashlib.md5(raw_url.encode('utf-8')).hexdigest()}{guessed_ext}"
+        cache_file.write_bytes(response.content)
+        data_uri = _file_to_data_uri(cache_file)
+        if data_uri: return data_uri
+        return cache_file.resolve().as_uri()
+    except Exception as e:
+        logger.debug(f"[终末地插件][抽卡头像]下载失败: {raw_url} | {type(e).__name__}: {e}")
+        return _escape_http_url_path(raw_url)
+
+
+def _batch_records(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """批量事件聚合器：彻底修复免费十连跨页与同屏显示截断"""
+    sorted_rows = sorted(rows, key=lambda x: (_to_int(x.get("gacha_ts")), _to_int(x.get("seq_id"))), reverse=True)
+    batches = []
+    i = 0
+    while i < len(sorted_rows):
+        row = sorted_rows[i]
+        if _to_bool(row.get("is_free")):
+            ts = row.get("gacha_ts")
+            items = [row]
+            j = i + 1
+            while j < len(sorted_rows) and _to_bool(sorted_rows[j].get("is_free")) and sorted_rows[j].get("gacha_ts") == ts:
+                items.append(sorted_rows[j])
+                j += 1
+            batches.append({"type": "batch", "items": items, "is_free": True})
+            i = j
+        else:
+            batches.append({"type": "single", "items": [row], "is_free": False})
+            i += 1
+    return batches
+
+# ==========================================
+# 1. 抽卡记录列表图渲染 (Records Image)
+# ==========================================
 def render_gacha_records_image(cache_data: Dict[str, Any], page: int = 1) -> bytes:
     stats = (cache_data.get("stats_data") or {}).get("stats") or {}
-    sections: List[Tuple[str, List[str]]] = []
-
-    pool_defs = (
-        ("standard", "常驻角色"),
-        ("beginner", "新手池"),
-        ("weapon", "武器池"),
-        ("limited", "限定角色"),
-    )
+    font_path = (Path(__file__).resolve().parents[2] / "assets" / "fonts" / "NotoSansCJKsc-Bold.otf").as_posix()
+    
+    pool_defs = (("standard", "常驻角色"), ("beginner", "启程寻访"), ("weapon", "武器寻访"), ("limited", "特许寻访"))
+    sections_html = []
+    
     for key, label in pool_defs:
         pools = cache_data.get("records_by_pool") or {}
         rows = pools.get(key) if isinstance(pools.get(key), list) else []
-        sorted_rows = sorted(
-            rows,
-            key=lambda x: (
-                -(int(x.get("seq_id")) if str(x.get("seq_id", "")).isdigit() else 0),
-                -(int(x.get("gacha_ts") or 0)),
-            ),
-        )
-        total = len(sorted_rows)
-        pages = max(1, (total + 9) // 10)
+        
+        batches = _batch_records(rows)
+        total_entities = len(batches)
+        pages = max(1, (total_entities + 9) // 10)
         current = max(1, min(page, pages))
         start = (current - 1) * 10
-        picked = sorted_rows[start : start + 10]
+        picked = batches[start : start + 10]
 
-        lines = [f"共 {total} 抽（第 {current}/{pages} 页）"]
+        items_html = []
         if picked:
-            for idx, r in enumerate(picked, start=1):
-                rarity = int(r.get("rarity") or 0)
-                name = r.get("char_name") or r.get("item_name") or "未知"
-                lines.append(f"{start + idx}. ★{rarity} {name}")
+            for idx, entity in enumerate(picked, start=1):
+                if entity["type"] == "single":
+                    r = entity["items"][0]
+                    rarity = _to_int(r.get("rarity"))
+                    name = escape_text(r.get("char_name") or r.get("item_name") or "未知")
+                    color_var = "var(--ef-yellow)" if rarity == 6 else ("var(--ef-blue)" if rarity == 5 else "var(--ef-text-main)")
+                    items_html.append(f"""
+                        <div style="display:flex; align-items:center; gap:12px; margin-bottom:8px; padding: 10px; background: var(--ef-panel-light); border-bottom: 1px solid var(--ef-border);" class="clip-corner-sm">
+                            <span style="color: var(--ef-text-sub); width: 40px; font-weight:bold;">#{start + idx:02d}</span>
+                            <span style="color: {color_var}; font-weight: bold; width: 60px;">★{rarity}</span>
+                            <span style="flex:1;">{name}</span>
+                        </div>
+                    """)
+                else:
+                    names = [escape_text(r.get("char_name") or r.get("item_name") or "未知") for r in entity["items"]]
+                    names_html = " // ".join([f"<span style='color: var(--ef-yellow)'>{n}</span>" if _to_int(r.get("rarity")) == 6 else n for r, n in zip(entity["items"], names)])
+                    items_html.append(f"""
+                        <div style="display:flex; align-items:center; gap:12px; margin-bottom:8px; padding: 12px; background: rgba(0, 153, 77, 0.08); border-left: 4px solid var(--ef-green);" class="clip-corner-sm tactical-scanline">
+                            <span style="color: var(--ef-green); width: 40px; font-weight: bold;">#{start + idx:02d}</span>
+                            <span style="color: var(--ef-green); font-weight: bold; min-width: 80px;">[免费供给]</span>
+                            <div style="flex:1; display:flex; flex-wrap:wrap; gap: 8px; font-size: 0.9em; line-height:1.4;">
+                                {names_html}
+                            </div>
+                        </div>
+                    """)
         else:
-            lines.append("暂无记录")
-        sections.append((label, lines))
+            items_html.append("<div style='color: var(--ef-text-sub); padding: 12px;'>[ 数据库空载 ] 暂无寻访记录</div>")
 
-    subtitle = (
-        f"总抽数：{stats.get('total_count', 0)} | 六星：{stats.get('star6_count', 0)} | "
-        f"五星：{stats.get('star5_count', 0)} | 四星：{stats.get('star4_count', 0)}"
-    )
+        sections_html.append(f"""
+            <div class="ef-panel corner-bracket" style="padding: 20px; margin-bottom: 24px;">
+                <div style="display:flex; justify-content:space-between; align-items:center; border-bottom: 1px solid var(--ef-border); padding-bottom: 10px; margin-bottom: 16px;">
+                    <div style="font-size: 1.2em; color: var(--ef-text-main); font-weight:bold;">> {label}</div>
+                    <div style="color: var(--ef-blue); font-size: 0.9em; font-weight:bold;">第 {current} / {pages} 页</div>
+                </div>
+                <div>{"".join(items_html)}</div>
+            </div>
+        """)
+
     updated_at = cache_data.get("updated_at")
-    footer = ""
-    if updated_at:
-        try:
-            footer = f"缓存时间：{datetime.fromtimestamp(float(updated_at) / 1000).strftime('%Y-%m-%d %H:%M:%S')}"
-        except Exception:
-            footer = ""
-    return render_report_image("终末地 抽卡记录", sections, subtitle=subtitle, footer=footer)
+    footer = f"记录同步于：{datetime.fromtimestamp(float(updated_at) / 1000).strftime('%Y-%m-%d %H:%M:%S')}" if updated_at else "记录实时生成"
+
+    html = f"""
+    <html>
+    <head><style>{ENDFIELD_THEME_CSS.replace('FONT_PATH_PLACEHOLDER', font_path)}</style></head>
+    <body style="width: 850px; padding: 40px;">
+        <div style="margin-bottom: 30px;">
+            <div class="ef-header-title">寻访溯源档案</div>
+            <div style="color: var(--ef-text-sub); margin-top: 4px; font-size: 1.1em; padding-left: 16px;">数据中心日志 (节点环境：昼间)</div>
+        </div>
+        <div style="display:flex; justify-content:space-between; background: var(--ef-panel); border: 1px solid var(--ef-border); padding: 16px 20px; margin-bottom: 30px;" class="clip-corner tactical-scanline">
+            <span style="font-weight:bold; font-size:1.1em;">寻访总计: <span style="color:var(--ef-blue)">{stats.get('total_count', 0)}</span></span>
+            <span style="font-weight:bold; font-size:1.1em;">★6: <span style="color:var(--ef-yellow)">{stats.get('star6_count', 0)}</span></span>
+            <span style="font-weight:bold; font-size:1.1em;">★5: <span style="color:var(--ef-blue)">{stats.get('star5_count', 0)}</span></span>
+            <span style="font-weight:bold; font-size:1.1em;">★4: <span style="color:var(--ef-text-sub)">{stats.get('star4_count', 0)}</span></span>
+        </div>
+        {"".join(sections_html)}
+        <div style="text-align: center; color: var(--ef-text-sub); font-size: 0.85em; margin-top: 30px; border-top: 1px solid var(--ef-border); padding-top: 16px;">
+            {footer} | 终末地分析引擎
+        </div>
+    </body>
+    </html>
+    """
+    return render_html_to_image(html, width=850)
 
 
+# ==========================================
+# 2. 抽卡数据分析图渲染 (Analysis Image)
+# ==========================================
 def render_gacha_analysis_image(stats_data: Dict[str, Any], cache_data: Dict[str, Any]) -> bytes:
     pool_stats = stats_data.get("pool_stats") or {}
     user_info = stats_data.get("user_info") or {}
@@ -77,108 +300,47 @@ def render_gacha_analysis_image(stats_data: Dict[str, Any], cache_data: Dict[str
     records_by_pool = cache_data.get("records_by_pool") or {}
     gacha_icon_map = cache_data.get("gacha_icon_map") or {}
 
-    up_char_names = {
-        str(x).strip()
-        for x in ((up_info.get("upCharNames") or up_info.get("char_up_names") or []))
-        if str(x).strip()
-    }
+    up_char_names = {str(x).strip() for x in (up_info.get("upCharNames") or up_info.get("char_up_names") or []) if str(x).strip()}
     up_weapon_name = str(up_info.get("upWeaponName") or up_info.get("weapon_up_name") or "").strip()
     raw_pool_up_map = up_info.get("poolUpMap") or up_info.get("pool_up_map") or {}
-    pool_up_map = {
-        str(pool_name).strip(): str(up_name).strip()
-        for pool_name, up_name in raw_pool_up_map.items()
-        if str(pool_name).strip() and str(up_name).strip()
-    }
-
-    def _to_int(v: Any) -> int:
-        try:
-            return int(v or 0)
-        except Exception:
-            return 0
-
-    def _to_bool(v: Any) -> bool:
-        if isinstance(v, bool):
-            return v
-        if isinstance(v, str):
-            return v.lower() in ("1", "true", "yes")
-        return bool(v)
+    pool_up_map = {str(k).strip(): str(v).strip() for k, v in raw_pool_up_map.items() if str(k).strip() and str(v).strip()}
 
     def _pool_stat(name1: str, name2: str) -> Dict[str, Any]:
-        return (pool_stats.get(name1) or pool_stats.get(name2) or {})
-
-    def _avg_cost(total: int, star6: int) -> str:
-        if star6 <= 0:
-            return "-"
-        return str(round(total / star6))
-
-    def _sort_record_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        def _seq(r: Dict[str, Any]) -> int:
-            try:
-                return int(r.get("seq_id") or 0)
-            except Exception:
-                return 0
-
-        def _ts(r: Dict[str, Any]) -> int:
-            try:
-                return int(r.get("gacha_ts") or 0)
-            except Exception:
-                return 0
-
-        return sorted(rows, key=lambda x: (_ts(x), _seq(x)))
+        return pool_stats.get(name1) or pool_stats.get(name2) or {}
 
     def _group_pool_rows(rows: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
         grouped: Dict[str, List[Dict[str, Any]]] = {}
-        for row in rows:
-            pool_name = str(row.get("pool_name") or "未知")
-            grouped.setdefault(pool_name, []).append(row)
+        for row in rows: grouped.setdefault(str(row.get("pool_name") or "未知"), []).append(row)
         return grouped
 
     def _text_matches(name: str, target: str) -> bool:
-        left = str(name or "").strip()
-        right = str(target or "").strip()
+        left, right = str(name or "").strip(), str(target or "").strip()
         return bool(left and right and (left == right or left in right or right in left))
 
     def _pool_specific_up(pool_name: str) -> str:
-        current = str(pool_name or "").strip()
-        for known_pool_name, up_name in pool_up_map.items():
-            if _text_matches(current, known_pool_name):
-                return up_name
+        for k, v in pool_up_map.items():
+            if _text_matches(pool_name, k): return v
         return ""
 
     def _is_up_item(name: str, pool_key: str, pool_name: str) -> bool:
-        pool_up_name = _pool_specific_up(pool_name)
-        if pool_up_name:
-            return _text_matches(name, pool_up_name)
-        if pool_key == "limited":
-            return any(_text_matches(name, up_name) for up_name in up_char_names)
-        if pool_key == "weapon" and up_weapon_name:
-            return _text_matches(name, up_weapon_name)
+        if specific := _pool_specific_up(pool_name): return _text_matches(name, specific)
+        if pool_key == "limited": return any(_text_matches(name, up) for up in up_char_names)
+        if pool_key == "weapon" and up_weapon_name: return _text_matches(name, up_weapon_name)
         return False
 
     def _build_timeline_rows(
-        rows: List[Dict[str, Any]],
-        *,
-        pool_key: str,
-        pool_name: str,
-        max_pity: int,
-        initial_paid_pity: int = 0,
-        initial_up_guaranteed: bool = False,
-        include_tail_pity: bool = True,
+        rows: List[Dict[str, Any]], *, pool_key: str, pool_name: str, max_pity: int,
+        initial_paid_pity: int = 0, initial_up_guaranteed: bool = False, include_tail_pity: bool = True,
     ) -> Dict[str, Any]:
-        sorted_rows = _sort_record_rows(rows)  # 旧 -> 新
-        paid_rows = [row for row in sorted_rows if not _to_bool(row.get("is_free"))]
-        free_rows = [row for row in sorted_rows if _to_bool(row.get("is_free"))]
+        """状态机解耦：梳理每个池子的时间线，拆分免费与付费"""
+        sorted_rows = sorted(rows, key=lambda x: (_to_int(x.get("gacha_ts")), _to_int(x.get("seq_id"))))
+        paid_rows = [r for r in sorted_rows if not _to_bool(r.get("is_free"))]
+        free_rows = [r for r in sorted_rows if _to_bool(r.get("is_free"))]
 
-        def _segment_timeline(
-            source_rows: List[Dict[str, Any]],
-            *,
-            initial_count: int = 0,
-            initial_guaranteed: bool = False,
-            include_tail: bool = True,
-        ) -> Tuple[List[Dict[str, Any]], int, bool]:
-            segments: List[Dict[str, Any]] = []
-            count = max(0, int(initial_count))
-            guaranteed_up = bool(initial_guaranteed)
+        def _segment_timeline(source_rows, init_count=0, init_guaranteed=False, include_tail=True):
+            segments = []
+            count = init_count
+            guaranteed_up = init_guaranteed
             for row in source_rows:
                 count += 1
                 if _to_int(row.get("rarity")) == 6:
@@ -188,965 +350,296 @@ def render_gacha_analysis_image(stats_data: Dict[str, Any], cache_data: Dict[str
                         tag = ""
                     elif pool_key == "limited":
                         is_up = _is_up_item(name, pool_key, pool_name)
-                        if guaranteed_up and is_up:
-                            tag = "保底"
-                            guaranteed_up = False
-                        elif is_up:
-                            tag = "UP"
-                        else:
-                            tag = "歪"
-                            guaranteed_up = True
+                        if guaranteed_up and is_up: tag, guaranteed_up = "保底", False
+                        elif is_up: tag = "UP"
+                        else: tag, guaranteed_up = "歪", True
                     elif pool_key == "weapon":
                         tag = "UP" if _is_up_item(name, pool_key, pool_name) else "歪"
-                    if _to_bool(row.get("is_free")):
-                        tag = "免费"
+                    
+                    if _to_bool(row.get("is_free")): tag = "免费供给"
+                    
                     segments.append({"count": count, "name": name, "is_pity": False, "tag": tag})
                     count = 0
             if include_tail and count > 0:
                 segments.append({"count": count, "name": "已垫", "is_pity": True})
             return segments, count, guaranteed_up
 
-        paid_timeline_old_to_new, paid_tail_pity, paid_tail_guaranteed = _segment_timeline(
-            paid_rows,
-            initial_count=initial_paid_pity,
-            initial_guaranteed=initial_up_guaranteed,
-            include_tail=include_tail_pity,
-        )
-        free_timeline_old_to_new, _, _ = _segment_timeline(free_rows)
-
-        def _ts(v: Dict[str, Any]) -> int:
-            try:
-                return int(v.get("gacha_ts") or 0)
-            except Exception:
-                return 0
-
-        pool_sort_ts = min((_ts(r) for r in sorted_rows), default=0)
+        paid_timeline, paid_tail, paid_guaranteed = _segment_timeline(paid_rows, initial_paid_pity, initial_up_guaranteed, include_tail_pity)
+        free_timeline, _, _ = _segment_timeline(free_rows, 0, False, False) # 免费时间线不含垫的状态
 
         return {
-            "paid_timeline": paid_timeline_old_to_new,
-            "paid_total": len(paid_rows),
-            "free_total": len(free_rows),
-            "free_timeline": free_timeline_old_to_new,
-            "max_pity": max_pity,
-            "sort_ts": pool_sort_ts,
-            "paid_tail_pity": paid_tail_pity,
-            "paid_tail_guaranteed": paid_tail_guaranteed,
+            "paid_timeline": paid_timeline, "paid_total": len(paid_rows), "free_total": len(free_rows),
+            "free_timeline": free_timeline, "max_pity": max_pity, 
+            "sort_ts": min((_to_int(r.get("gacha_ts")) for r in sorted_rows), default=0),
+            "paid_tail_pity": paid_tail, "paid_tail_guaranteed": paid_guaranteed
         }
 
-    def _build_pool_cards(pool_key: str, max_pity: int, *, shared_paid_pity: bool = False) -> List[Dict[str, Any]]:
+    def _build_pool_cards(pool_key: str, max_pity: int, shared_paid_pity: bool = False) -> List[Dict[str, Any]]:
         rows = records_by_pool.get(pool_key)
-        if not isinstance(rows, list):
-            return []
-        grouped = _group_pool_rows(rows)
-        grouped_items = list(grouped.items())
+        if not isinstance(rows, list): return []
+        grouped_items = list(_group_pool_rows(rows).items())
+        grouped_items.sort(key=lambda item: (min(_to_int(r.get("gacha_ts")) for r in item[1]), item[0]))
 
-        def _pool_sort_ts(pool_rows: List[Dict[str, Any]]) -> int:
-            try:
-                return min(int((row or {}).get("gacha_ts") or 0) for row in pool_rows)
-            except Exception:
-                return 0
-
-        grouped_items.sort(key=lambda item: (_pool_sort_ts(item[1]), item[0]))
-
-        cards_chrono: List[Dict[str, Any]] = []
-        carry_paid_pity = 0
-        carry_up_guaranteed = False
-        last_index = len(grouped_items) - 1
-        for idx, (pool_name, pool_rows) in enumerate(grouped_items):
-            include_tail = True if (not shared_paid_pity or idx == last_index) else False
-            timeline_data = _build_timeline_rows(
-                pool_rows,
-                pool_key=pool_key,
-                pool_name=pool_name,
-                max_pity=max_pity,
-                initial_paid_pity=(carry_paid_pity if shared_paid_pity else 0),
-                initial_up_guaranteed=(carry_up_guaranteed if shared_paid_pity and pool_key == "limited" else False),
-                include_tail_pity=include_tail,
+        cards = []
+        carry_pity, carry_guaranteed = 0, False
+        for idx, (p_name, p_rows) in enumerate(grouped_items):
+            tail = not shared_paid_pity or idx == len(grouped_items) - 1
+            data = _build_timeline_rows(
+                p_rows, pool_key=pool_key, pool_name=p_name, max_pity=max_pity,
+                initial_paid_pity=carry_pity if shared_paid_pity else 0,
+                initial_up_guaranteed=carry_guaranteed if shared_paid_pity and pool_key == "limited" else False,
+                include_tail_pity=tail
             )
-            cards_chrono.append(
-                {
-                    "pool_name": pool_name,
-                    "pool_key": pool_key,
-                    "paid_timeline": timeline_data["paid_timeline"],
-                    "paid_total": timeline_data["paid_total"],
-                    "free_total": timeline_data["free_total"],
-                    "free_timeline": timeline_data["free_timeline"],
-                    "max_pity": timeline_data["max_pity"],
-                    "sort_ts": timeline_data["sort_ts"],
-                }
-            )
+            cards.append({"pool_name": p_name, "pool_key": pool_key, **data})
             if shared_paid_pity:
-                carry_paid_pity = _to_int(timeline_data.get("paid_tail_pity"))
-                if pool_key == "limited":
-                    carry_up_guaranteed = bool(timeline_data.get("paid_tail_guaranteed"))
+                carry_pity = data["paid_tail_pity"]
+                if pool_key == "limited": carry_guaranteed = data["paid_tail_guaranteed"]
+                
+        cards.sort(key=lambda x: (-x["sort_ts"], x["pool_name"]))
+        return cards
 
-        # 最新卡池在前，和旧版展示一致
-        cards_chrono.sort(key=lambda x: (-(x.get("sort_ts") or 0), x["pool_name"]))
-        return cards_chrono
-
+    # UI 视图层数据构建
     limited_cards = _build_pool_cards("limited", 80, shared_paid_pity=True)
     weapon_cards = _build_pool_cards("weapon", 40)
     standard_cards = _build_pool_cards("standard", 80) + _build_pool_cards("beginner", 80)
 
-    limited_stat = _pool_stat("limited_char", "limited")
-    standard_stat = _pool_stat("standard_char", "standard")
-    beginner_stat = _pool_stat("beginner_char", "beginner")
-    weapon_stat = _pool_stat("weapon", "weapon")
-
-    limited_total = _to_int(limited_stat.get("total") or limited_stat.get("total_count"))
-    limited_6 = _to_int(limited_stat.get("star6") or limited_stat.get("star6_count"))
-    weapon_total = _to_int(weapon_stat.get("total") or weapon_stat.get("total_count"))
-    weapon_6 = _to_int(weapon_stat.get("star6") or weapon_stat.get("star6_count"))
-    standard_total = _to_int(standard_stat.get("total") or standard_stat.get("total_count")) + _to_int(
-        beginner_stat.get("total") or beginner_stat.get("total_count")
-    )
-    standard_6 = _to_int(standard_stat.get("star6") or standard_stat.get("star6_count")) + _to_int(
-        beginner_stat.get("star6") or beginner_stat.get("star6_count")
-    )
-
-    nickname = str(user_info.get("nickname") or user_info.get("game_uid") or "未知")
-    uid = str(user_info.get("game_uid") or "-")
-
-    def _bar_color_level(count: int, max_pity: int, is_pity: bool = False) -> str:
-        if is_pity:
-            return "yellow"
-        ratio = count / max(1, max_pity)
-        if ratio < 0.5:
-            return "green"
-        if ratio < 0.8:
-            return "yellow"
-        return "red"
-
-    def _bar_percent(count: int, max_pity: int) -> float:
-        if max_pity <= 0:
-            return 50.0
-        return max(14.0, min(100.0, (count / max_pity) * 100.0))
-
-    def _cache_remote_icon(icon_url: str) -> str:
-        def _file_to_data_uri(path: Path) -> str:
-            try:
-                suffix = path.suffix.lower()
-                mime = {
-                    ".png": "image/png",
-                    ".jpg": "image/jpeg",
-                    ".jpeg": "image/jpeg",
-                    ".webp": "image/webp",
-                    ".gif": "image/gif",
-                    ".svg": "image/svg+xml",
-                }.get(suffix, "application/octet-stream")
-                payload = base64.b64encode(path.read_bytes()).decode("ascii")
-                return f"data:{mime};base64,{payload}"
-            except Exception:
-                return ""
-
-        def _escape_http_url_path(url: str) -> str:
-            try:
-                parts = urlsplit(url)
-                if parts.scheme not in ("http", "https"):
-                    return url
-                escaped_path = quote(parts.path or "", safe="/%:@!$&'()*+,;=-._~")
-                return urlunsplit((parts.scheme, parts.netloc, escaped_path, parts.query, parts.fragment))
-            except Exception:
-                return url
-
-        raw_url = str(icon_url or "").strip()
-        if not raw_url:
-            return ""
-
-        if raw_url.startswith("//"):
-            raw_url = "https:" + raw_url
-
-        # 兼容后端返回的相对路径，统一补全为绝对 URL
-        if not raw_url.startswith(("http://", "https://", "file:///", "data:")):
-            base_url = str(getattr(PLUGIN_CONFIG, "endfield_api_baseurl", "") or "").strip()
-            if base_url:
-                if raw_url.startswith("/"):
-                    raw_url = f"{base_url.rstrip('/')}{raw_url}"
-                else:
-                    raw_url = f"{base_url.rstrip('/')}/{raw_url.lstrip('/')}"
-
-        if raw_url.startswith("file:///"):
-            try:
-                local_path = Path(raw_url.replace("file:///", "", 1))
-                if local_path.exists() and local_path.is_file():
-                    data_uri = _file_to_data_uri(local_path)
-                    if data_uri:
-                        return data_uri
-            except Exception:
-                pass
-            return raw_url
-        if not (raw_url.startswith("http://") or raw_url.startswith("https://")):
-            return raw_url
-
-        raw_url = _escape_http_url_path(raw_url)
-
-        cache_dir = get_data_dir() / "gacha_icon_cache"
-        cache_dir.mkdir(parents=True, exist_ok=True)
-
-        suffix = Path(raw_url.split("?", 1)[0]).suffix.lower()
-        if suffix not in {".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg"}:
-            suffix = ".png"
-        cache_file = cache_dir / f"{hashlib.md5(raw_url.encode('utf-8')).hexdigest()}{suffix}"
-        if cache_file.exists() and cache_file.stat().st_size > 0:
-            data_uri = _file_to_data_uri(cache_file)
-            if data_uri:
-                return data_uri
-            return cache_file.resolve().as_uri()
-
-        try:
-            headers: Dict[str, str] = {}
-            api_key = str(get_api_key() or "").strip()
-            if api_key:
-                headers["x-api-key"] = api_key
-            response = httpx.get(raw_url, timeout=10.0, follow_redirects=True, headers=headers or None)
-            response.raise_for_status()
-            if suffix == ".png":
-                content_type = (response.headers.get("content-type") or "").split(";", 1)[0].strip().lower()
-                guessed_ext = mimetypes.guess_extension(content_type) or ""
-                if guessed_ext in {".jpg", ".jpeg", ".png", ".webp", ".gif", ".svg"}:
-                    better_file = cache_dir / f"{hashlib.md5(raw_url.encode('utf-8')).hexdigest()}{guessed_ext}"
-                    cache_file = better_file
-            cache_file.write_bytes(response.content)
-            data_uri = _file_to_data_uri(cache_file)
-            if data_uri:
-                return data_uri
-            return cache_file.resolve().as_uri()
-        except Exception as e:
-            logger.debug(f"[终末地插件][抽卡头像]下载失败: {raw_url} | {type(e).__name__}: {e}")
-            return _escape_http_url_path(raw_url)
-
-    def _pick_avatar_url_from_name(name: str) -> str:
-        key = str(name or "").strip()
-        if not key:
-            return ""
-        def _norm(s: str) -> str:
-            return "".join(ch.lower() for ch in str(s or "") if ch.isalnum() or ch in ("_",))
-
-        key_norm = _norm(key)
-        mapped_icon = str(gacha_icon_map.get(key) or "").strip()
-        if mapped_icon:
-            return _cache_remote_icon(mapped_icon)
-        for map_name, icon_url in gacha_icon_map.items() if isinstance(gacha_icon_map, dict) else []:
-            map_key = str(map_name or "").strip()
-            if not map_key:
-                continue
-            map_norm = _norm(map_key)
-            if key == map_key or (key_norm and map_norm and (key_norm in map_norm or map_norm in key_norm)):
-                icon = str(icon_url or "").strip()
-                if icon:
-                    return _cache_remote_icon(icon)
-        for rows in records_by_pool.values() if isinstance(records_by_pool, dict) else []:
-            if not isinstance(rows, list):
-                continue
-            for row in rows:
-                if not isinstance(row, dict):
-                    continue
-                row_name = str(row.get("char_name") or row.get("item_name") or "").strip()
-                row_norm = _norm(row_name)
-                if not (key == row_name or (key_norm and row_norm and (key_norm in row_norm or row_norm in key_norm))):
-                    continue
-                for icon_key in (
-                    "avatarSqUrl",
-                    "avatar_sq_url",
-                    "avatarRtUrl",
-                    "avatar_rt_url",
-                    "avatar",
-                    "avatar_url",
-                    "avatarUrl",
-                    "icon",
-                    "icon_url",
-                    "iconUrl",
-                    "char_avatar",
-                    "charAvatar",
-                    "char_avatar_url",
-                    "charAvatarUrl",
-                    "item_icon",
-                    "itemIcon",
-                ):
-                    icon = str(row.get(icon_key) or "").strip()
-                    if icon:
-                        return _cache_remote_icon(icon)
-                nested = row.get("char_data") if isinstance(row.get("char_data"), dict) else row.get("charData")
-                if isinstance(nested, dict):
-                    for icon_key in ("avatarSqUrl", "avatarRtUrl", "avatarUrl", "iconUrl", "icon"):
-                        icon = str(nested.get(icon_key) or "").strip()
-                        if icon:
-                            return _cache_remote_icon(icon)
+    def _pick_avatar(name: str) -> str:
+        k = str(name or "").strip()
+        if not k: return ""
+        norm = lambda s: "".join(c.lower() for c in str(s) if c.isalnum() or c == "_")
+        kn = norm(k)
+        if mapped := gacha_icon_map.get(k): return _cache_remote_icon(mapped)
+        for mk, icon in gacha_icon_map.items():
+            if k == mk or (kn and norm(mk) and (kn in norm(mk) or norm(mk) in kn)): return _cache_remote_icon(icon)
         return ""
 
     def _render_star6_rows(card: Dict[str, Any]) -> str:
         paid_timeline = list(reversed(card.get("paid_timeline") or []))
         free_timeline = list(reversed(card.get("free_timeline") or []))
-        max_pity = _to_int(card.get("max_pity")) or 80
-        inherited_pity = _to_int(card.get("inherited_pity") or 0)
+        max_pity = card.get("max_pity", 80)
+        parts = []
 
-        def _icon_html(icon_url: str, alt_name: str) -> str:
-            if not icon_url:
-                return "<div class=\"star6-icon star6-icon-free\">×</div>"
-            return (
-                f"<img class=\"star6-icon\" src=\"{escape_text(icon_url)}\" alt=\"{escape_text(alt_name)}\" "
-                "onerror=\"this.outerHTML='&lt;div class=\\\"star6-icon star6-icon-free\\\"&gt;×&lt;/div&gt;'\">"
-            )
+        def get_color(c: int, is_pity: bool):
+            if is_pity: return "var(--ef-blue)"
+            ratio = c / max(1, max_pity)
+            return "var(--ef-green)" if ratio < 0.5 else ("var(--ef-yellow)" if ratio < 0.8 else "var(--ef-red)")
 
-        parts: List[str] = []
+        # 渲染：已垫已垫 (适配亮色主题的对比度)
+        if paid_timeline and paid_timeline[0].get("is_pity"):
+            pity = _to_int(paid_timeline[0].get("count"))
+            pct = min(100.0, (pity / max_pity) * 100.0)
+            parts.append(f"""
+                <div style="display:flex; align-items:center; gap:12px; margin-top:8px;">
+                    <div style="width:44px;height:44px; background:var(--ef-panel-light); display:flex; align-items:center; justify-content:center; color:var(--ef-blue); border:1px solid var(--ef-border);" class="clip-corner-sm">◆</div>
+                    <div style="flex:1; height:28px; background:var(--ef-bg); border:1px solid var(--ef-border);" class="clip-corner-sm">
+                        <div style="width:{pct}%; height:100%; background:var(--ef-blue); opacity:0.85;" class="tactical-scanline"></div>
+                        <span style="position:relative; top:-24px; left:12px; font-size:0.85em; font-weight:bold; color:var(--ef-text-main);">当前已垫 // {pity}</span>
+                    </div>
+                </div>
+            """)
 
-        # 已垫行（显示继承保底）
-        if paid_timeline and bool(paid_timeline[0].get("is_pity")):
-            pity_count = _to_int(paid_timeline[0].get("count"))
-            pity_bar = _bar_percent(pity_count, max_pity)
-            inherited_pct = min(100.0, (inherited_pity / max(1, max_pity)) * 100.0) if inherited_pity > 0 else 0.0
-            parts.append(
-                "<div class=\"star6-row pity-row\">"
-                "<div class=\"star6-icon star6-icon-pity\">?</div>"
-                "<div class=\"bar-wrap\">"
-                f"<div class=\"bar-inner bar-level-{_bar_color_level(pity_count, max_pity, True)} bar-not-full\" style=\"width:{pity_bar:.2f}%;\">"
-                + (f"<div class=\"bar-inherit-overlay\" style=\"width:{inherited_pct:.2f}%;\"></div>" if inherited_pct > 0 else "")
-                + f"<span class=\"bar-text\">已垫 {pity_count}</span></div></div>"
-                "<span class=\"star6-tag star6-tag-empty\"></span>"
-                "</div>"
-            )
-
+        # 渲染：付费出的六星
         for row in paid_timeline:
-            if bool(row.get("is_pity")):
-                continue
-            count = _to_int(row.get("count"))
-            name = str(row.get("name") or "")
-            icon = _pick_avatar_url_from_name(name)
-            tag = str(row.get("tag") or "")
-            badge = str(row.get("badge") or "normal")
-            if tag == "UP":
-                badge = "up"
-            elif tag == "保底":
-                badge = "baodi"
-            elif tag == "歪":
-                badge = "wai"
+            if row.get("is_pity"): continue
+            c, n, t = _to_int(row.get("count")), escape_text(row.get("name")), row.get("tag")
+            icon = _pick_avatar(n)
+            pct = min(100.0, (c / max_pity) * 100.0)
+            bar_color = get_color(c, False)
+            tag_col = "var(--ef-yellow)" if t in ("UP", "保底") else ("var(--ef-red)" if t == "歪" else "var(--ef-border-hl)")
+            img_html = f"<img src='{icon}' style='width:44px;height:44px;object-fit:cover;border:1px solid var(--ef-border);' class='clip-corner-sm'/>" if icon else "<div style='width:44px;height:44px;background:var(--ef-panel-light);border:1px solid var(--ef-border);' class='clip-corner-sm'></div>"
+            
+            parts.append(f"""
+                <div style="display:flex; align-items:center; gap:12px; margin-top:8px;">
+                    {img_html}
+                    <div style="flex:1; height:28px; background:var(--ef-bg); border:1px solid var(--ef-border); position:relative;" class="clip-corner-sm">
+                        <div style="width:{pct}%; height:100%; background:{bar_color};" class="tactical-scanline"></div>
+                        <span style="position:absolute; left:12px; top:5px; font-size:0.85em; font-weight:bold; color:#ffffff; text-shadow: 0 1px 3px rgba(0,0,0,0.4);">{c} 抽</span>
+                    </div>
+                    <div style="width: 50px; background:{tag_col}; color:#ffffff; text-align:center; font-size:0.8em; font-weight:bold; padding:4px 0; text-shadow:0 1px 2px rgba(0,0,0,0.3);" class="clip-corner-sm">{t or '常规'}</div>
+                </div>
+            """)
 
-            parts.append(
-                "<div class=\"star6-row\">"
-                + _icon_html(icon, name)
-                + "<div class=\"bar-wrap\">"
-                f"<div class=\"bar-inner bar-level-{_bar_color_level(count, max_pity)}{' bar-not-full' if count < max_pity else ''}\" style=\"width:{_bar_percent(count, max_pity):.2f}%;\">"
-                f"<span class=\"bar-text\">{count}抽</span></div></div>"
-                f"<span class=\"star6-tag star6-tag-{badge}\">{escape_text(tag)}</span>"
-                "</div>"
-            )
-
-        # 免费十连：六星与免费进度条合并在同一行（免费xx抽）
-        free_rows = [row for row in free_timeline if not bool(row.get("is_pity"))]
-        free_hit = free_rows[0] if free_rows else None
-        free_pity_row = next((row for row in free_timeline if bool(row.get("is_pity"))), None)
-        free_total = _to_int((free_hit or {}).get("count") or (free_pity_row or {}).get("count") or 0)
-        if str(card.get("pool_key") or "") == "limited" and free_total > 0:
-            free_name = str((free_hit or {}).get("name") or "")
-            free_icon = _pick_avatar_url_from_name(free_name) if free_name else ""
-            parts.append(
-                "<div class=\"star6-row free-row\">"
-                + _icon_html(free_icon, free_name)
-                + "<div class=\"bar-wrap\">"
-                f"<div class=\"bar-inner bar-level-free bar-not-full\" style=\"width:{_bar_percent(free_total, 10):.2f}%;\">"
-                f"<span class=\"bar-text\">免费 - {free_total}抽</span></div></div>"
-                "<span class=\"star6-tag star6-tag-empty\"></span>"
-                "</div>"
-            )
+        # 渲染：免费出的所有六星（循环处理，彻底修复双黄截断 BUG）
+        free_rows = [r for r in free_timeline if not r.get("is_pity")]
+        if card.get("pool_key") == "limited" and free_rows:
+            parts.append('<div style="margin-top:12px; padding-top:12px; border-top:1px dashed rgba(0,153,77,0.3);">')
+            for f_item in free_rows:
+                f_count, f_name = _to_int(f_item["count"]), escape_text(f_item["name"])
+                icon = _pick_avatar(f_name)
+                img_html = f"<img src='{icon}' style='width:44px;height:44px;object-fit:cover;border:1px solid var(--ef-green);' class='clip-corner-sm'/>" if icon else ""
+                parts.append(f"""
+                    <div style="display:flex; align-items:center; gap:12px; margin-bottom:8px;">
+                        {img_html}
+                        <div style="flex:1; height:28px; background:rgba(0,153,77,0.08); border:1px solid var(--ef-green); position:relative;" class="clip-corner-sm tactical-scanline">
+                            <span style="position:absolute; left:12px; top:5px; font-size:0.85em; font-weight:bold; color:var(--ef-green);">免费供给 // 第 {f_count} 抽</span>
+                        </div>
+                    </div>
+                """)
+            parts.append('</div>')
 
         return "".join(parts)
 
     def _render_pool_group(label: str, cards: List[Dict[str, Any]]) -> str:
-        if not cards:
-            return (
-                "<div class=\"pool-group\">"
-                "<div class=\"pool-group-header\"><span class=\"pool-group-title\">%s</span></div>"
-                "<div class=\"pool-group-empty\">暂无记录</div></div>"
-            ) % escape_text(label)
-
-        entries: List[str] = []
+        if not cards: return ""
+        entries = []
         for card in cards:
-            pool_name = str(card.get("pool_name") or "未知")
-            pool_key = str(card.get("pool_key") or "")
-            paid_total = _to_int(card.get("paid_total"))
-            free_total = _to_int(card.get("free_total"))
-            paid_timeline = card.get("paid_timeline") or []
-            red_count = len([x for x in paid_timeline if not bool(x.get("is_pity"))])
-            up_count = len([x for x in paid_timeline if str(x.get("tag") or "") in ("UP", "保底")])
-            is_limited_pool = pool_key == "limited" or bool(_pool_specific_up(pool_name))
-            if pool_key == "weapon":
-                metric1_label = "每红花费"
-                metric1_val = str(round((paid_total // 10) / red_count)) + "抽" if red_count > 0 else "-"
-            elif is_limited_pool:
-                metric1_label = "平均UP花费"
-                metric1_val = str(round(paid_total / up_count)) + "抽" if up_count > 0 else "-"
-            else:
-                metric1_label = "每红花费"
-                metric1_val = str(round(paid_total / red_count)) + "抽" if red_count > 0 else "-"
+            pool_key = card.get("pool_key")
+            p_total, f_total = _to_int(card.get("paid_total")), _to_int(card.get("free_total"))
+            paid_tl = card.get("paid_timeline") or []
+            reds = len([x for x in paid_tl if not x.get("is_pity")])
+            avg = str(round(p_total/reds)) if reds > 0 else "-"
+            
+            entries.append(f"""
+                <div style="margin-bottom: 20px; background: var(--ef-panel); border: 1px solid var(--ef-border); padding: 16px;" class="clip-corner">
+                    <div style="display:flex; justify-content:space-between; border-bottom: 1px solid var(--ef-border); padding-bottom: 8px; margin-bottom: 12px;">
+                        <span style="font-weight:bold; color:var(--ef-text-main); font-size:1.1em;">{escape_text(card.get("pool_name"))}</span>
+                        <span style="font-size:0.9em; color:var(--ef-text-sub);">总计: <span style="color:var(--ef-text-main)">{p_total}</span> | ★6: <span style="color:var(--ef-blue)">{reds}</span> | 均出: <span style="color:var(--ef-green)">{avg}</span></span>
+                    </div>
+                    {_render_star6_rows(card)}
+                </div>
+            """)
+        return f"<div class='corner-bracket ef-panel' style='padding: 24px; margin-bottom: 30px; background: var(--ef-bg);'><div class='ef-header-title' style='border-color:var(--ef-blue); margin-bottom: 20px; color:var(--ef-text-main);'>{label}</div>{''.join(entries)}</div>"
 
-            metric2_label = "不歪率" if is_limited_pool and red_count > 0 else "出红数"
-            metric2_val = f"{round((up_count / red_count) * 100, 1)}%" if is_limited_pool and red_count > 0 else str(red_count)
-            total_metric = f"合计 {paid_total} 抽"
-            pity_row = next((x for x in reversed(paid_timeline) if bool(x.get("is_pity"))), None)
-            pity_count = _to_int((pity_row or {}).get("count"))
-            if pity_count > 0:
-                total_metric += f" - 垫 {pity_count}"
-
-            entries.append(
-                "<div class=\"pool-entry\">"
-                f"<div class=\"pool-entry-header\"><span class=\"pool-entry-name\">{escape_text(pool_name)}</span></div>"
-                "<div class=\"pool-entry-metrics\">"
-                f"<span class=\"metric\">{escape_text(total_metric)}</span>"
-                f"<span class=\"metric\">{escape_text(metric1_label)} {escape_text(metric1_val)}</span>"
-                f"<span class=\"metric\">{escape_text(metric2_label)} {escape_text(metric2_val)}</span>"
-                + (f"<span class=\"metric\">免费 {free_total} 抽</span>" if pool_key == "limited" and free_total > 0 else "")
-                + "</div>"
-                f"<div class=\"star6-list\">{_render_star6_rows(card)}</div>"
-                "</div>"
-            )
-
-        return (
-            "<div class=\"pool-group\">"
-            f"<div class=\"pool-group-header\"><span class=\"pool-group-title\">{escape_text(label)}</span></div>"
-            + "".join(entries)
-            + "</div>"
-        )
-
-    updated_at = cache_data.get("updated_at")
-    time_text = ""
-    if updated_at:
-        try:
-            time_text = datetime.fromtimestamp(float(updated_at) / 1000).strftime("%Y-%m-%d %H:%M")
-        except Exception:
-            time_text = ""
-
-    avatar_candidates = [
-        str(user_info.get("avatar") or "").strip(),
-        str(user_info.get("avatar_url") or "").strip(),
-        str(user_info.get("avatarUrl") or "").strip(),
-        str(user_info.get("head_url") or "").strip(),
-        str(user_info.get("headUrl") or "").strip(),
-    ]
-    qq_user_id = str(cache_data.get("user_id") or "").strip()
-    if qq_user_id:
-        avatar_candidates.append(f"https://q1.qlogo.cn/g?b=qq&nk={qq_user_id}&s=100")
-    avatar_url = next((url for url in avatar_candidates if url), "")
-    avatar_html = ""
-    if avatar_url:
-        avatar_html = (
-            f'<img src="{escape_text(avatar_url)}" alt="头像" class="user-avatar" '
-            'onerror="this.style.display=\'none\'">'
-        )
-
-    analysis_time = escape_text(time_text) if time_text else ""
-    sync_hint = "若需刷新，发送 /终末地同步抽卡记录"
+    avatar_url = next((str(user_info.get(k) or "").strip() for k in ["avatar", "avatar_url"] if user_info.get(k)), "")
+    if not avatar_url and cache_data.get("user_id"): avatar_url = f"https://q1.qlogo.cn/g?b=qq&nk={cache_data.get('user_id')}&s=100"
     font_path = (Path(__file__).resolve().parents[2] / "assets" / "fonts" / "NotoSansCJKsc-Bold.otf").as_posix()
+    
+    ls = _pool_stat("limited_char", "limited")
+    ws = _pool_stat("weapon", "weapon")
+    ss, bs = _pool_stat("standard_char", "standard"), _pool_stat("beginner_char", "beginner")
 
-    pool_groups_html = "".join(
-        [
-            _render_pool_group("特许寻访", limited_cards),
-            _render_pool_group("武器池", weapon_cards),
-            _render_pool_group("常驻寻访", standard_cards),
-        ]
-    )
-
-    body = f"""
-<div class="gacha-analysis-container">
-    <div class="top-bar">
-        <div class="user-info">
-            {avatar_html}
-            <div class="user-details">
-                <div class="user-name">{escape_text(nickname)}</div>
-                <div class="user-uid">UID {escape_text(uid)}</div>
+    html = f"""
+    <html>
+    <head><style>{ENDFIELD_THEME_CSS.replace('FONT_PATH_PLACEHOLDER', font_path)}</style></head>
+    <body style="width: 1500px; padding: 50px;">
+        <!-- 顶栏区域 -->
+        <div style="display: flex; justify-content: space-between; align-items: flex-end; border-bottom: 2px solid var(--ef-border-hl); padding-bottom: 20px; margin-bottom: 40px;">
+            <div style="display: flex; align-items: center; gap: 24px;">
+                <img src="{escape_text(avatar_url)}" style="width: 80px; height: 80px; border: 2px solid var(--ef-blue); background: var(--ef-panel);" class="clip-corner" />
+                <div>
+                    <h1 style="margin:0; font-size: 2.6em; color: var(--ef-text-main); letter-spacing: 1px;">抽卡分析</h1>
+                    <div style="color: var(--ef-blue); font-size: 1.2em; margin-top: 6px; font-weight:bold;">NAME：{escape_text(user_info.get('nickname'))} <span style="color:var(--ef-text-sub); margin-left:10px;">| UID：{escape_text(user_info.get('game_uid'))}</span></div>
+                </div>
+            </div>
+            <div style="text-align: right;">
+                <div style="color: var(--ef-text-sub); font-size:1.1em; margin-bottom:4px; font-weight:bold;">已追踪寻访总数</div>
+                <div style="font-size:2.8em; color:var(--ef-text-main); font-weight:bold; line-height:1;">{overall_stats.get('total_count', 0)}</div>
+                <div style="font-size:0.8em; color:var(--ef-blue); margin-top:8px;">最后同步：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</div>
             </div>
         </div>
-        <div class="top-bar-center">
-            <h1 class="top-title">抽卡分析</h1>
-            <p class="top-sub">终末地寻访统计概览</p>
+
+        <!-- 聚合数据概览 -->
+        <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 24px; margin-bottom: 40px;">
+            <div class="ef-panel clip-corner tactical-scanline" style="padding:24px; border-top: 4px solid var(--ef-yellow);">
+                <div style="color:var(--ef-text-sub); font-size:1em; font-weight:bold; margin-bottom:12px;">[ 最高稀有度获取 ]</div>
+                <div style="font-size:3em; font-weight:bold; color:var(--ef-yellow);">{overall_stats.get('star6_count', 0)} <span style="font-size:0.4em; color:var(--ef-text-sub);">个</span></div>
+            </div>
+            <div class="ef-panel clip-corner tactical-scanline" style="padding:24px; border-top: 4px solid var(--ef-blue);">
+                <div style="color:var(--ef-text-sub); font-size:1em; font-weight:bold; margin-bottom:12px;">[ 特许寻访总计 ]</div>
+                <div style="font-size:3em; font-weight:bold; color:var(--ef-blue);">{_to_int(ls.get('total'))}</div>
+            </div>
+            <div class="ef-panel clip-corner tactical-scanline" style="padding:24px; border-top: 4px solid var(--ef-green);">
+                <div style="color:var(--ef-text-sub); font-size:1em; font-weight:bold; margin-bottom:12px;">[ 武器寻访总计 ]</div>
+                <div style="font-size:3em; font-weight:bold; color:var(--ef-green);">{_to_int(ws.get('total'))}</div>
+            </div>
+            <div class="ef-panel clip-corner tactical-scanline" style="padding:24px; border-top: 4px solid var(--ef-text-main);">
+                <div style="color:var(--ef-text-sub); font-size:1em; font-weight:bold; margin-bottom:12px;">[ 常驻寻访总计 ]</div>
+                <div style="font-size:3em; font-weight:bold; color:var(--ef-text-main);">{_to_int(ss.get('total')) + _to_int(bs.get('total'))}</div>
+            </div>
         </div>
-    </div>
 
-    <div class="stats-row">
-        <div class="stat-item"><div class="stat-content"><span class="stat-label-top">总抽数</span><span class="stat-num">{_to_int(overall_stats.get('total_count'))}</span></div></div>
-        <div class="stat-item stat-stars"><div class="stat-content"><span class="stat-label-top">6星 / 5星 / 4星</span><div class="stat-stars-row"><span class="star-item star-6">{_to_int(overall_stats.get('star6_count'))}</span><span class="star-separator">/</span><span class="star-item star-5">{_to_int(overall_stats.get('star5_count'))}</span><span class="star-separator">/</span><span class="star-item star-4">{_to_int(overall_stats.get('star4_count'))}</span></div></div></div>
-        <div class="stat-item stat-limited"><div class="stat-content"><span class="stat-label-top">特许寻访 · 平均出红</span><span class="stat-num">{escape_text(_avg_cost(limited_total, limited_6))}</span></div></div>
-        <div class="stat-item stat-weapon"><div class="stat-content"><span class="stat-label-top">武器池 · 平均出红</span><span class="stat-num">{escape_text(_avg_cost(weapon_total, weapon_6))}</span></div></div>
-        <div class="stat-item stat-standard"><div class="stat-content"><span class="stat-label-top">常驻寻访 · 平均出红</span><span class="stat-num">{escape_text(_avg_cost(standard_total, standard_6))}</span></div></div>
-    </div>
-
-    <div class="time-bar">
-        <span class="analysis-time">{analysis_time}</span>
-        <span class="sync-hint">{escape_text(sync_hint)}</span>
-    </div>
-
-    <div class="pool-groups-container">{pool_groups_html}</div>
-
-    <footer class="footer"><div class="footer-text">Endfield Plugin | NoneBot</div></footer>
-</div>
-"""
-
-    analysis_style = """
-@font-face {
-        font-family: 'HarmonyOS Sans SC';
-        src: url('file:///FONT_PATH_PLACEHOLDER') format('opentype');
-    font-weight: bold;
-    font-style: normal;
-}
-
-* {
-    margin: 0;
-    padding: 0;
-    box-sizing: border-box;
-}
-
-html,
-body {
-    width: 1500px;
-    background: #f0f1f3;
-    font-family: 'HarmonyOS Sans SC', -apple-system, BlinkMacSystemFont, 'Microsoft YaHei', sans-serif;
-    color: #1f2937;
-}
-
-.wrap {
-    padding: 0;
-    width: 1500px;
-}
-
-.gacha-analysis-container {
-    width: 1500px;
-    padding: 14px 16px 6px;
-}
-
-.top-bar {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 12px 16px;
-    margin-bottom: 12px;
-    background: #fff;
-    border-radius: 10px;
-    position: relative;
-}
-
-.user-info {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-}
-
-.user-avatar {
-    width: 48px;
-    height: 48px;
-    border-radius: 10px;
-    border: 2px solid #e5e7eb;
-    object-fit: cover;
-}
-
-.user-details {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-}
-
-.user-name {
-    font-size: 1rem;
-    font-weight: bold;
-    color: #1f2937;
-}
-
-.user-uid {
-    font-size: 0.75rem;
-    color: #6b7280;
-}
-
-.top-bar-center {
-    position: absolute;
-    left: 50%;
-    transform: translateX(-50%);
-    text-align: center;
-}
-
-.top-title {
-    font-size: 1.4rem;
-    font-weight: bold;
-    color: #1f2937;
-    margin-bottom: 2px;
-}
-
-.top-sub {
-    font-size: 0.82rem;
-    color: #6b7280;
-}
-
-.stats-row {
-    display: grid;
-    grid-template-columns: repeat(5, 1fr);
-    gap: 10px;
-    margin-bottom: 12px;
-}
-
-.stat-item {
-    background: #fff;
-    border-radius: 12px;
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
-}
-
-.stat-content {
-    padding: 14px 12px;
-    text-align: center;
-}
-
-.stat-num {
-    display: block;
-    font-size: 1.6rem;
-    font-weight: bold;
-    color: #1f2937;
-    line-height: 1.1;
-}
-
-.stat-label-top {
-    display: block;
-    font-size: 0.7rem;
-    color: #000;
-    font-weight: bold;
-    letter-spacing: 0.02em;
-    margin-bottom: 6px;
-}
-
-.stat-stars { background: linear-gradient(135deg, #f9fafb 0%, #f3f4f6 100%); }
-.stat-stars-row {
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    gap: 6px;
-}
-.star-item {
-    font-size: 1.3rem;
-    font-weight: bold;
-}
-.star-separator {
-    font-size: 1.1rem;
-    color: #9ca3af;
-}
-.star-6 { color: #dc2626; }
-.star-5 { color: #d97706; }
-.star-4 { color: #7c3aed; }
-
-.stat-limited { background: linear-gradient(135deg, #fef2f2 0%, #fee2e2 100%); }
-.stat-limited .stat-num { color: #dc2626; }
-.stat-weapon { background: linear-gradient(135deg, #fffbeb 0%, #fef3c7 100%); }
-.stat-weapon .stat-num { color: #d97706; }
-.stat-standard { background: linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%); }
-.stat-standard .stat-num { color: #2563eb; }
-
-.time-bar {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: 10px;
-    padding: 0 2px;
-}
-
-.analysis-time {
-    font-size: 0.82rem;
-    color: #6b7280;
-}
-
-.sync-hint {
-    font-size: 0.75rem;
-    color: #1f2937;
-}
-
-.pool-groups-container {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 10px;
-    margin-bottom: 10px;
-    align-items: start;
-}
-
-.pool-group {
-    background: #fff;
-    border-radius: 10px;
-    border: 1px solid #e5e7eb;
-    padding: 14px 16px;
-}
-
-.pool-group-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: 8px;
-    padding-bottom: 8px;
-    border-bottom: 1px solid #f0f0f0;
-}
-
-.pool-group-title {
-    font-size: 1.05rem;
-    font-weight: bold;
-    color: #1f2937;
-    padding-left: 10px;
-    border-left: 4px solid #374151;
-}
-
-.pool-group-empty {
-    font-size: 0.85rem;
-    color: #d1d5db;
-    padding: 8px 0;
-    text-align: center;
-}
-
-.pool-entry {
-    padding: 10px 12px;
-    margin-bottom: 8px;
-    background: #f9fafb;
-    border-radius: 8px;
-    border: 1px solid #f0f0f0;
-}
-
-.pool-group .pool-entry:last-child {
-    margin-bottom: 0;
-}
-
-.pool-entry-header {
-    margin-bottom: 6px;
-}
-
-.pool-entry-name {
-    font-size: 0.95rem;
-    font-weight: bold;
-    color: #1f2937;
-}
-
-.pool-entry-metrics {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px 10px;
-    font-size: 0.78rem;
-    color: #9ca3af;
-    margin-bottom: 8px;
-    padding-bottom: 8px;
-    border-bottom: 1px solid #e5e7eb;
-}
-
-.pool-entry-metrics .metric:first-child {
-    font-weight: bold;
-    color: #1f2937;
-}
-
-.star6-list {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    margin-top: 6px;
-}
-
-.star6-row {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    width: 100%;
-}
-
-.star6-icon {
-    width: 40px;
-    height: 40px;
-    object-fit: cover;
-    border-radius: 8px;
-    border: 1px solid #e5e7eb;
-    flex-shrink: 0;
-}
-
-.star6-icon-pity {
-    width: 40px;
-    height: 40px;
-    min-width: 40px;
-    border-radius: 8px;
-    border: 1px solid #e5e7eb;
-    background: #e5e7eb;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 1.2rem;
-    font-weight: bold;
-    color: #6b7280;
-    flex-shrink: 0;
-}
-
-.star6-icon-free {
-    width: 40px;
-    height: 40px;
-    min-width: 40px;
-    border-radius: 8px;
-    border: 1px solid #e5e7eb;
-    background: #fef3c7;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 1.3rem;
-    font-weight: bold;
-    color: #92400e;
-    flex-shrink: 0;
-}
-
-.bar-wrap {
-    position: relative;
-    flex: 1;
-    min-width: 60px;
-    height: 28px;
-    background: #e5e7eb;
-    border-radius: 14px;
-    overflow: hidden;
-}
-
-.bar-inner {
-    position: relative;
-    z-index: 2;
-    height: 100%;
-    min-width: 40px;
-    border-radius: 14px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 0 8px;
-    overflow: hidden;
-}
-
-.bar-not-full {
-    border-radius: 14px 0 0 14px;
-}
-
-.bar-text {
-    position: relative;
-    z-index: 2;
-    font-size: 0.82rem;
-    font-weight: 600;
-    color: #fff;
-    white-space: nowrap;
-}
-
-.bar-level-green { background: #22c55e; }
-.bar-level-yellow { background: #eab308; }
-.bar-level-red { background: #ef4444; }
-.bar-level-free { background: #f59e0b; }
-
-.bar-inherit-overlay {
-    position: absolute;
-    top: 0;
-    left: 0;
-    height: 100%;
-    background: #3b82f6;
-    border-radius: 14px 0 0 14px;
-    z-index: 1;
-}
-
-.star6-tag {
-    flex-shrink: 0;
-    margin-left: 4px;
-    width: 28px;
-    height: 22px;
-    min-width: 28px;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 0.68rem;
-    font-weight: 600;
-    border-radius: 4px;
-    line-height: 1;
-}
-
-.star6-tag-wai { color: #fff; background: #64748b; }
-.star6-tag-baodi { color: #fff; background: #0284c7; }
-.star6-tag-up { color: #fff; background: #b45309; }
-.star6-tag-normal { background: transparent; }
-.star6-tag-empty { background: transparent; }
-
-.pity-row {
-    margin-top: 2px;
-    padding-top: 4px;
-    border-top: 1px dashed #e5e7eb;
-}
-
-.free-row {
-    margin-top: 2px;
-    padding-top: 4px;
-    border-top: 1px dashed #e5e7eb;
-}
-
-.footer {
-    text-align: center;
-    margin-top: 4px;
-    padding: 6px 0 0;
-}
-
-.footer-text {
-    font-size: 0.7rem;
-    color: #1f2937;
-}
-""".replace("FONT_PATH_PLACEHOLDER", font_path)
-
-    return render_html_to_image(body, width=1500, extra_styles=analysis_style)
+        <!-- 卡池专栏 -->
+        <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 30px;">
+            <div>{_render_pool_group("[ 特许寻访 ]", limited_cards)}</div>
+            <div>{_render_pool_group("[ 武器寻访 ]", weapon_cards)}</div>
+            <div>{_render_pool_group("[ 常驻与启程 ]", standard_cards)}</div>
+        </div>
+    </body>
+    </html>
+    """
+    return render_html_to_image(html, width=1500)
 
 
+# ==========================================
+# 3. 全服统计图渲染 (Global Stats)
+# ==========================================
 def render_gacha_global_stats_image(stats_data: Dict[str, Any], keyword: str = "") -> bytes:
     s = stats_data.get("stats") or stats_data
     by_channel = s.get("by_channel") or {}
     by_type = s.get("by_type") or {}
-
+    font_path = (Path(__file__).resolve().parents[2] / "assets" / "fonts" / "NotoSansCJKsc-Bold.otf").as_posix()
+    
     def _fmt(v: Any, ndigits: int = 2) -> str:
-        try:
-            return f"{float(v):.{ndigits}f}"
-        except Exception:
-            return "-"
+        try: return f"{float(v):.{ndigits}f}"
+        except Exception: return "-"
 
     current_pool = s.get("current_pool") or {}
     up_name = current_pool.get("up_char_name") or "-"
     up_weapon = current_pool.get("up_weapon_name") or "-"
 
-    sections: List[Tuple[str, List[str]]] = []
-    for key, label in (("beginner", "新手池"), ("standard", "常驻池"), ("weapon", "武器池"), ("limited", "限定池")):
+    panels = []
+    for key, label in (("beginner", "启程寻访"), ("standard", "常驻寻访"), ("weapon", "武器寻访"), ("limited", "特许寻访")):
         item = by_type.get(key) or {}
-        total = int(item.get("total") or 0)
-        star6 = int(item.get("star6") or 0)
-        star5 = int(item.get("star5") or 0)
-        star4 = int(item.get("star4") or 0)
-        avg = _fmt(item.get("avg_pity"), 1)
+        total, star6 = int(item.get("total") or 0), int(item.get("star6") or 0)
         rate = (star6 / total * 100) if total > 0 else 0
-        sections.append(
-            (
-                label,
-                [
-                    f"总抽数：{total}",
-                    f"六星：{star6} | 五星：{star5} | 四星：{star4}",
-                    f"出红率：{rate:.2f}% | 均出：{avg} 抽",
-                ],
-            )
-        )
+        panels.append(f"""
+            <div class="ef-panel corner-bracket" style="padding: 20px;">
+                <div style="color:var(--ef-text-main); font-weight:bold; font-size:1.1em; margin-bottom:12px; border-bottom:1px solid var(--ef-border); padding-bottom:6px;">{label}</div>
+                <div style="font-size: 1em; line-height: 1.8;">
+                    <div>寻访数: <span style="color:var(--ef-text-main); font-weight:bold; float:right;">{total}</span></div>
+                    <div>出红率: <span style="color:var(--ef-yellow); font-weight:bold; float:right;">{rate:.2f}%</span></div>
+                    <div>平均期望: <span style="color:var(--ef-green); font-weight:bold; float:right;">{_fmt(item.get('avg_pity'), 1)} 抽</span></div>
+                </div>
+            </div>
+        """)
 
-    official = by_channel.get("official")
-    bilibili = by_channel.get("bilibili")
-    if isinstance(official, dict):
-        sections.append(
-            (
-                "官服",
-                [
-                    f"统计用户：{official.get('total_users', 0)}",
-                    f"总抽数：{official.get('total_pulls', 0)}",
-                    f"平均出红：{_fmt(official.get('avg_pity'))} 抽",
-                ],
-            )
-        )
-    if isinstance(bilibili, dict):
-        sections.append(
-            (
-                "B服",
-                [
-                    f"统计用户：{bilibili.get('total_users', 0)}",
-                    f"总抽数：{bilibili.get('total_pulls', 0)}",
-                    f"平均出红：{_fmt(bilibili.get('avg_pity'))} 抽",
-                ],
-            )
-        )
+    ch_html = []
+    for ch_key, ch_label in (("official", "官方网络节点"), ("bilibili", "BiliBili 协作节点")):
+        ch_data = by_channel.get(ch_key)
+        if isinstance(ch_data, dict):
+            ch_html.append(f"""
+                <div style="display:flex; justify-content:space-between; align-items:center; padding: 16px; background:var(--ef-panel-light); border:1px solid var(--ef-border); margin-bottom: 12px;" class="clip-corner-sm tactical-scanline">
+                    <span style="color:var(--ef-blue); font-weight:bold; font-size:1.1em;">[{ch_label}]</span>
+                    <span style="color:var(--ef-text-sub);">覆盖用户 <span style="color:var(--ef-text-main); font-weight:bold;">{ch_data.get('total_users', 0)}</span></span>
+                    <span style="color:var(--ef-text-sub);">总计寻访 <span style="color:var(--ef-text-main); font-weight:bold;">{ch_data.get('total_pulls', 0)}</span></span>
+                    <span style="color:var(--ef-text-sub);">均出红 <span style="color:var(--ef-yellow); font-size:1.1em; font-weight:bold;">{_fmt(ch_data.get('avg_pity'))} 抽</span></span>
+                </div>
+            """)
 
-    subtitle = (
-        f"总抽数：{s.get('total_pulls', 0)} | 统计用户：{s.get('total_users', 0)} | 平均出红：{_fmt(s.get('avg_pity'))} 抽\n"
-        f"六星：{s.get('star6_total', 0)} | 五星：{s.get('star5_total', 0)} | 四星：{s.get('star4_total', 0)}\n"
-        f"当期UP角色：{up_name} | UP武器：{up_weapon}"
-    )
-    footer = f"查询池：{keyword}" if keyword else ""
-    return render_report_image("终末地 全服抽卡统计", sections, subtitle=subtitle, footer=footer)
+    html = f"""
+    <html>
+    <head><style>{ENDFIELD_THEME_CSS.replace('FONT_PATH_PLACEHOLDER', font_path)}</style></head>
+    <body style="width: 1100px; padding: 50px;">
+        <div style="border-left: 6px solid var(--ef-yellow); padding-left: 20px; margin-bottom: 40px; background: rgba(0,0,0,0.03); padding-top: 16px; padding-bottom: 16px;">
+            <h1 style="margin: 0; font-size: 2.8em; letter-spacing: 2px;">全域数据节点</h1>
+            <div style="color: var(--ef-text-sub); font-size: 1.2em; margin-top: 8px; font-weight:bold;">全网络寻访节点监控汇总 {f"// {keyword}" if keyword else ""}</div>
+        </div>
+
+        <div class="ef-panel clip-corner tactical-scanline" style="padding: 30px; margin-bottom: 40px; border-top: 3px solid var(--ef-blue);">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+                <div>
+                    <div style="font-size:1em; color:var(--ef-text-sub); font-weight:bold; margin-bottom: 8px;">[ 核心指标监控 ]</div>
+                    <div style="font-size:2.2em; font-weight:bold; color:var(--ef-text-main);">全网寻访总数: {s.get('total_pulls', 0)}</div>
+                </div>
+                <div style="text-align: right; line-height: 1.8; font-size: 1.1em;">
+                    <div>监控操作员总数: <span style="color:var(--ef-text-main); font-weight:bold;">{s.get('total_users', 0)}</span></div>
+                    <div>全网平均出红期望: <span style="color:var(--ef-green); font-size:1.3em; font-weight:bold;">{_fmt(s.get('avg_pity'))} 抽</span></div>
+                </div>
+            </div>
+            <div style="margin-top: 20px; padding-top: 20px; border-top: 1px dashed var(--ef-border-hl); color: var(--ef-text-sub); font-size:1.1em;">
+                当前指令目标 // 限定概率提升: <span style="color:var(--ef-yellow); font-weight:bold; margin:0 10px;">干员: {up_name}</span> | <span style="color:var(--ef-yellow); font-weight:bold; margin:0 10px;">武器: {up_weapon}</span>
+            </div>
+        </div>
+
+        <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px; margin-bottom: 40px;">
+            {"".join(panels)}
+        </div>
+
+        <div class="ef-panel corner-bracket" style="padding: 24px;">
+            <div class="ef-header-title" style="border-color:var(--ef-green); margin-bottom:20px; color:var(--ef-text-main);">[ 各频段节点分布 ]</div>
+            {"".join(ch_html)}
+        </div>
+    </body>
+    </html>
+    """
+    return render_html_to_image(html, width=1100)
